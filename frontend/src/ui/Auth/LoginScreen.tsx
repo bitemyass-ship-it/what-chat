@@ -58,7 +58,7 @@ export default function LoginScreen() {
 
       setPassword('');
       startTransition(() => {
-        router.refresh();
+        router.push('/');
       });
     } catch {
       setError('Unable to log in right now');
