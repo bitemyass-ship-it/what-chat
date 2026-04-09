@@ -11,7 +11,7 @@ const AUTH_COOKIE_OPTIONS = {
   httpOnly: true,
   path: '/',
   sameSite: 'lax' as const,
-  secure: process.env.NODE_ENV === 'production'
+  secure: false
 };
 
 export const isBlankAuthValue = (value: string | null | undefined): boolean =>
