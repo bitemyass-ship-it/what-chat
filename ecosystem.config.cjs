@@ -67,7 +67,7 @@ module.exports = {
     {
       name: 'whatsapp-monitor-backend',
       cwd: repoRoot,
-      script: 'dist/server.js',
+      script: 'dist/src/server.js',
       exec_mode: 'fork',
       instances: 1,
       autorestart: true,
