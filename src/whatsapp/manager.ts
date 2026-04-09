@@ -891,7 +891,12 @@ export const createSessionManager = ({
     }
 
     try {
-      const whatsappState = await client.getState();
+      const whatsappState = await Promise.race([
+        client.getState(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('getState timeout')), 4_000)
+        )
+      ]);
       const connectedByState = isConnectedWhatsappState(whatsappState);
       const currentHealth = buildSessionHealth(employeeId);
       const runtimeStatus: SessionRuntimeStatus =

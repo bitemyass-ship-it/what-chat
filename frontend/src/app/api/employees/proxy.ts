@@ -81,13 +81,27 @@ export const proxyProtectedEmployeeApiRequest = async (
 
     return buildProxyResponse(backendResponse);
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const isTimeout =
+      error instanceof Error &&
+      (error.name === 'AbortError' ||
+        error.name === 'TimeoutError' ||
+        errorMessage.includes('timeout') ||
+        errorMessage.includes('aborted'));
+
     console.error('Employee API proxy request failed', {
       ...logContext,
       method,
-      error: error instanceof Error ? error.message : 'Unknown error'
+      error: errorMessage,
+      isTimeout
     });
 
-    return createProxyErrorResponse('Unable to reach employee API', 502);
+    return createProxyErrorResponse(
+      isTimeout
+        ? 'Backend took too long to respond. The session may still be starting — try again in a moment.'
+        : 'Unable to reach employee API',
+      502
+    );
   }
 };
 
