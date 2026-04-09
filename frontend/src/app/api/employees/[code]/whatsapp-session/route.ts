@@ -1,5 +1,5 @@
 import { type NextRequest } from 'next/server';
-import { proxyProtectedEmployeeApiRequest } from '../../proxy';
+import { WHATSAPP_SESSION_PROXY_TIMEOUT_MS, proxyProtectedEmployeeApiRequest } from '../../proxy';
 
 export async function GET(
   request: NextRequest,
@@ -13,7 +13,8 @@ export async function GET(
       code,
       scope: 'employee-whatsapp-session'
     },
-    'GET'
+    'GET',
+    WHATSAPP_SESSION_PROXY_TIMEOUT_MS
   );
 }
 
@@ -29,6 +30,7 @@ export async function POST(
       code,
       scope: 'employee-whatsapp-session'
     },
-    'POST'
+    'POST',
+    WHATSAPP_SESSION_PROXY_TIMEOUT_MS
   );
 }

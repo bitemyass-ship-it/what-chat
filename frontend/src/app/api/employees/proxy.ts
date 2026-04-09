@@ -3,6 +3,7 @@ import { UNAUTHORIZED_ERROR, getAuthPasswordFromRequest } from '@/lib/auth';
 import { fetchAuthenticatedBackend } from '@/lib/backend-api';
 
 const EMPLOYEE_PROXY_TIMEOUT_MS = 5_000;
+export const WHATSAPP_SESSION_PROXY_TIMEOUT_MS = 30_000;
 
 const createProxyErrorResponse = (
   message: string,
@@ -50,7 +51,8 @@ export const proxyProtectedEmployeeApiRequest = async (
   request: NextRequest,
   path: string,
   logContext: Record<string, unknown>,
-  method: 'GET' | 'PATCH' | 'POST' | 'DELETE'
+  method: 'GET' | 'PATCH' | 'POST' | 'DELETE',
+  timeoutMs = EMPLOYEE_PROXY_TIMEOUT_MS
 ): Promise<NextResponse> => {
   const authPassword = getAuthPasswordFromRequest(request);
 
@@ -66,7 +68,7 @@ export const proxyProtectedEmployeeApiRequest = async (
       contentType,
       method,
       path,
-      timeoutMs: EMPLOYEE_PROXY_TIMEOUT_MS
+      timeoutMs
     });
 
     if (backendResponse === 'config_error') {
