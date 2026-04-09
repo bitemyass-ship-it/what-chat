@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 import {
   startTransition,
   useEffect,
+  useRef,
   useState,
   type FormEvent
 } from 'react';
@@ -31,6 +32,8 @@ interface EmployeeEditorProps {
 type SessionControlMode = 'enable' | 'disable';
 
 const SESSION_POLL_INTERVAL_MS = 1_500;
+const POLLING_QR_TIMEOUT_MS = 2 * 60 * 1_000;
+const POLLING_MAX_ERRORS = 5;
 
 const parseErrorMessage = async (
   response: Response,
@@ -67,6 +70,9 @@ export default function EmployeeEditor({ initialEmployee }: EmployeeEditorProps)
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
   const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
   const [isPollingSession, setIsPollingSession] = useState(false);
+  const [pollAttempt, setPollAttempt] = useState(0);
+  const pollingStartedAtRef = useRef<number | null>(null);
+  const pollErrorCountRef = useRef<number>(0);
 
   const normalizedDisplayName = normalizeNullableText(displayName);
   const normalizedPhoneNumber = normalizeNullableText(phoneNumber);
@@ -233,6 +239,8 @@ export default function EmployeeEditor({ initialEmployee }: EmployeeEditorProps)
     setIsPollingSession(false);
     setIsQrModalOpen(false);
     setQrImageUrl(null);
+    pollingStartedAtRef.current = null;
+    pollErrorCountRef.current = 0;
   }, [employee.code]);
 
   useEffect(() => {
@@ -240,12 +248,32 @@ export default function EmployeeEditor({ initialEmployee }: EmployeeEditorProps)
 
     if (!shouldPollSession(session)) {
       setIsPollingSession(false);
+      pollingStartedAtRef.current = null;
+      pollErrorCountRef.current = 0;
       return;
     }
 
     setIsPollingSession(true);
 
+    if (pollingStartedAtRef.current === null) {
+      pollingStartedAtRef.current = Date.now();
+      pollErrorCountRef.current = 0;
+    }
+
     const timeoutId = window.setTimeout(async () => {
+      const timeoutReached =
+        pollingStartedAtRef.current !== null &&
+        Date.now() - pollingStartedAtRef.current >= POLLING_QR_TIMEOUT_MS;
+
+      if (timeoutReached) {
+        if (isCancelled) return;
+        setSessionError('WhatsApp session did not start in time. Please try again.');
+        setIsPollingSession(false);
+        pollingStartedAtRef.current = null;
+        pollErrorCountRef.current = 0;
+        return;
+      }
+
       try {
         const nextSession = await requestSessionState();
 
@@ -256,16 +284,22 @@ export default function EmployeeEditor({ initialEmployee }: EmployeeEditorProps)
         setSessionError(null);
         applySessionPayload(nextSession, 'poll');
       } catch (pollError) {
-        if (isCancelled) {
-          return;
-        }
+        if (isCancelled) return;
 
-        setSessionError(
-          pollError instanceof Error
-            ? pollError.message
-            : 'Failed to load WhatsApp session'
-        );
-        setIsPollingSession(false);
+        pollErrorCountRef.current += 1;
+
+        if (pollErrorCountRef.current > POLLING_MAX_ERRORS) {
+          setSessionError(
+            pollError instanceof Error
+              ? pollError.message
+              : 'Failed to load WhatsApp session'
+          );
+          setIsPollingSession(false);
+          pollingStartedAtRef.current = null;
+          pollErrorCountRef.current = 0;
+        } else {
+          setPollAttempt((prev: number) => prev + 1);
+        }
       }
     }, SESSION_POLL_INTERVAL_MS);
 
@@ -273,7 +307,7 @@ export default function EmployeeEditor({ initialEmployee }: EmployeeEditorProps)
       isCancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [employee.code, session]);
+  }, [employee.code, session, pollAttempt]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -415,6 +449,8 @@ export default function EmployeeEditor({ initialEmployee }: EmployeeEditorProps)
         setIsPollingSession(false);
         setQrImageUrl(null);
         setSession(null);
+        pollingStartedAtRef.current = null;
+        pollErrorCountRef.current = 0;
       }
 
       startTransition(() => {
@@ -523,6 +559,8 @@ export default function EmployeeEditor({ initialEmployee }: EmployeeEditorProps)
         })
       );
       setSessionError(null);
+      pollingStartedAtRef.current = null;
+      pollErrorCountRef.current = 0;
     } catch {
       setStatusError(
         nextIsActive ? 'Unable to enable employee' : 'Unable to disable employee'
