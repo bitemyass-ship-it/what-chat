@@ -1,0 +1,12 @@
+node_modules
+dist
+sessions
+coverage
+.next
+.env*
+!.env.example
+!frontend/.env.example
+.DS_Store
+.wwebjs_cache/
+data/
+.tmp/

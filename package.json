@@ -1,0 +1,38 @@
+{
+  "name": "whatsapp-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "description": "Minimal WhatsApp monitoring service with multi-session support.",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "dev:seed": "ts-node --transpile-only scripts/reset-dev-data.ts",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:build": "npm --prefix frontend run build",
+    "frontend:start": "npm --prefix frontend run start",
+    "test": "jest --runInBand",
+    "test:watch": "jest --watch"
+  },
+  "dependencies": {
+    "express": "latest",
+    "puppeteer": "latest",
+    "qrcode-terminal": "latest",
+    "whatsapp-web.js": "latest"
+  },
+  "devDependencies": {
+    "@types/express": "latest",
+    "@types/jest": "latest",
+    "@types/node": "latest",
+    "@types/qrcode-terminal": "latest",
+    "jest": "latest",
+    "ts-jest": "latest",
+    "ts-node": "latest",
+    "ts-node-dev": "latest",
+    "typescript": "latest"
+  }
+}
