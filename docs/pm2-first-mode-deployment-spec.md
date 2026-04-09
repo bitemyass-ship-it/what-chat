@@ -127,10 +127,19 @@ The following paths must be persistent:
 
 Minimum requirement:
 
-- `WHATSAPP_DATABASE_PATH` must be an absolute path outside the repo checkout
-- `WHATSAPP_SESSION_DIR` must be an absolute path outside the repo checkout
+- `WHATSAPP_DATABASE_PATH` must be an absolute path
+- `WHATSAPP_SESSION_DIR` must be an absolute path
 
-Example:
+Both paths may reside inside or outside the repo checkout. If kept inside the repo, avoid running `git clean -fd` as it will delete untracked files including database and session artifacts.
+
+Example inside the repo:
+
+```env
+WHATSAPP_DATABASE_PATH=/opt/whatsapp-monitor/database/whatsapp-monitor.sqlite
+WHATSAPP_SESSION_DIR=/opt/whatsapp-monitor/sessions
+```
+
+Example outside the repo:
 
 ```env
 WHATSAPP_DATABASE_PATH=/var/lib/whatsapp-monitor/data/whatsapp-monitor.sqlite

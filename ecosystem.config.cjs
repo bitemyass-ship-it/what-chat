@@ -3,15 +3,6 @@ const path = require('node:path');
 const repoRoot = __dirname;
 const frontendRoot = path.join(repoRoot, 'frontend');
 
-const isPathInsideDirectory = (candidatePath, directoryPath) => {
-  const relativePath = path.relative(directoryPath, candidatePath);
-
-  return (
-    relativePath === '' ||
-    (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
-  );
-};
-
 const requireNonEmptyEnv = (name) => {
   const value = process.env[name];
 
@@ -29,15 +20,7 @@ const requirePersistentBackendPath = (name) => {
     throw new Error(`${name} must be an absolute path for pm2 production deployment`);
   }
 
-  const normalizedPath = path.resolve(value);
-
-  if (isPathInsideDirectory(normalizedPath, repoRoot)) {
-    throw new Error(
-      `${name} must point outside the repository checkout for pm2 production deployment`
-    );
-  }
-
-  return normalizedPath;
+  return path.resolve(value);
 };
 
 const requireUrlEnv = (name) => {

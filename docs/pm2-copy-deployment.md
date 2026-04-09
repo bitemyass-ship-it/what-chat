@@ -46,7 +46,16 @@ If you built locally, copy the built app as-is, including `dist`, `frontend/.nex
 
 ## 3. Create Persistent Data Dirs
 
-The database and WhatsApp session storage must live outside the repo checkout.
+The database and WhatsApp session storage must be on an absolute path. They can live inside the repo checkout or outside — both are supported.
+
+Example inside the repo:
+
+```bash
+mkdir -p /opt/whatsapp-monitor/database
+mkdir -p /opt/whatsapp-monitor/sessions
+```
+
+Example outside the repo:
 
 ```bash
 sudo mkdir -p /var/lib/whatsapp-monitor/data
@@ -54,14 +63,16 @@ sudo mkdir -p /var/lib/whatsapp-monitor/sessions
 sudo chown -R "$USER":"$USER" /var/lib/whatsapp-monitor
 ```
 
+If you keep the data inside the repo checkout, avoid running `git clean -fd` as it will delete untracked files including the database and session artifacts.
+
 ## 4. Set Environment
 
 Create a deploy env file on the server, for example `/opt/whatsapp-monitor/.deploy.env`:
 
 ```env
 AUTH_PASSWORD=change-me-now
-WHATSAPP_DATABASE_PATH=/var/lib/whatsapp-monitor/data/whatsapp-monitor.sqlite
-WHATSAPP_SESSION_DIR=/var/lib/whatsapp-monitor/sessions
+WHATSAPP_DATABASE_PATH=/opt/whatsapp-monitor/database/whatsapp-monitor.sqlite
+WHATSAPP_SESSION_DIR=/opt/whatsapp-monitor/sessions
 EMPLOYEES_API_BASE_URL=http://127.0.0.1:3050
 ```
 
