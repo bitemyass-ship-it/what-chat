@@ -73,17 +73,6 @@ export const loadEnvironment = ({
   }
 };
 
-const isPathInsideDirectory = (
-  candidatePath: string,
-  directoryPath: string
-): boolean => {
-  const relativePath = path.relative(directoryPath, candidatePath);
-
-  return (
-    relativePath === '' ||
-    (!relativePath.startsWith('..') && !path.isAbsolute(relativePath))
-  );
-};
 
 export const requirePersistentProductionPath = ({
   env = process.env,
@@ -114,13 +103,6 @@ export const requirePersistentProductionPath = ({
   }
 
   const normalizedPath = path.resolve(trimmedPath);
-  const normalizedProjectRoot = path.resolve(projectRoot);
-
-  if (isPathInsideDirectory(normalizedPath, normalizedProjectRoot)) {
-    throw new Error(
-      `${variableName} must point outside the repository checkout for first-mode production`
-    );
-  }
 
   return normalizedPath;
 };
