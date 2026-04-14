@@ -109,6 +109,7 @@ ci-build:
 		printf "AUTH_PASSWORD=\nWHATSAPP_DATABASE_PATH=\nWHATSAPP_SESSION_DIR=\nEMPLOYEES_API_BASE_URL=\n" > $(DEPLOY_ENV_FILE); \
 		printf "Created %s — fill in the remaining values before starting pm2\n" "$(DEPLOY_ENV_FILE)"; \
 	fi
+	@printf "\n[reminder] If this is a fresh server, run 'pm2 startup' and execute the printed command to enable boot persistence.\n"
 
 ci-stop:
 	pm2 delete whatsapp-monitor-backend whatsapp-monitor-frontend
@@ -124,5 +125,5 @@ ci-run:
 		pm2 restart ecosystem.config.cjs --env production --update-env; \
 	else \
 		pm2 start ecosystem.config.cjs --env production; \
-		pm2 save; \
 	fi
+	pm2 save

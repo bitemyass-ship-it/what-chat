@@ -107,7 +107,25 @@ set +a
 pm2 restart ecosystem.config.cjs --env production --update-env
 ```
 
-## 6. Verify
+## 6. Enable Boot Persistence
+
+Run `pm2 startup` once per server to generate a system init script that starts the pm2 daemon and restores saved processes on reboot:
+
+```bash
+pm2 startup
+```
+
+pm2 prints a command prefixed with `sudo` — copy-paste and execute it exactly as shown. This only needs to be done once per server (or again if you change the init system or the user running pm2).
+
+After every intentional change to the process list (adding/removing apps, updating env vars, running `pm2 delete`), persist the current state:
+
+```bash
+pm2 save
+```
+
+Without `pm2 startup`, a server reboot or daemon crash will result in an empty process list and no automatic recovery.
+
+## 7. Verify
 
 Backend liveness:
 

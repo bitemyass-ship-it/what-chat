@@ -71,7 +71,10 @@ module.exports = {
       exec_mode: 'fork',
       instances: 1,
       autorestart: true,
-      restart_delay: 5000,
+      exp_backoff_restart_delay: 1000,
+      max_restarts: 15,
+      min_uptime: 10000,
+      max_memory_restart: '400M',
       kill_timeout: 20000,
       time: true,
       env_production: backendProductionEnv
@@ -84,7 +87,10 @@ module.exports = {
       exec_mode: 'fork',
       instances: 1,
       autorestart: true,
-      restart_delay: 5000,
+      exp_backoff_restart_delay: 1000,
+      max_restarts: 15,
+      min_uptime: 10000,
+      max_memory_restart: '300M',
       kill_timeout: 10000,
       time: true,
       env_production: frontendProductionEnv
