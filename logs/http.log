@@ -1,0 +1,3 @@
+{"timestamp":"2026-04-15T07:32:12.801Z","level":"info","category":"http","pid":79012,"message":"GET /employees 200 2ms","method":"GET","url":"/employees","status":200,"durationMs":2,"ip":"::1","contentLength":197,"userAgent":"node"}
+{"timestamp":"2026-04-15T07:33:32.755Z","level":"info","category":"http","pid":79012,"message":"GET /employees 200 1ms","method":"GET","url":"/employees","status":200,"durationMs":1,"ip":"::1","contentLength":197,"userAgent":"node"}
+{"timestamp":"2026-04-15T07:47:35.222Z","level":"info","category":"http","pid":86096,"message":"GET /employees 200 2ms","method":"GET","url":"/employees","status":200,"durationMs":2,"ip":"::1","contentLength":197,"userAgent":"node"}

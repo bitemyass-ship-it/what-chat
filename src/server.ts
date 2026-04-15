@@ -14,6 +14,10 @@ import {
   requireAuthPassword,
   requirePersistentProductionPath
 } from './utils/env';
+import {
+  startHealthLogger,
+  type HealthLogger
+} from './utils/health-logger';
 import { createLogger } from './utils/logger';
 import { createWhatsappClientFactory } from './whatsapp/client';
 import { createCallHandler } from './whatsapp/call-handler';
@@ -22,9 +26,9 @@ import { createSessionManager } from './whatsapp/manager';
 import { resolveEmployeeSessionLocation } from './whatsapp/session-location';
 
 const DEFAULT_PORT = 3050;
-const DEFAULT_SESSION_ACTIVITY_SYNC_INTERVAL_MS = 1_000;
-const DEFAULT_CHAT_SYNC_INTERVAL_MS = 60_000;
-const DEFAULT_CHAT_SYNC_INITIAL_DELAY_MS = 5_000;
+const DEFAULT_SESSION_ACTIVITY_SYNC_INTERVAL_MS = 60_000;
+const DEFAULT_CHAT_SYNC_INTERVAL_MS = 70_000;
+const DEFAULT_CHAT_SYNC_INITIAL_DELAY_MS = 80_000;
 const DEFAULT_CHAT_SYNC_EMPLOYEE_CONCURRENCY = 1;
 const DEFAULT_CHAT_SYNC_SHUTDOWN_TIMEOUT_MS = 15_000;
 
@@ -430,7 +434,9 @@ export interface ShutdownFailure {
   operation:
     | 'chat-sync-scheduler'
     | 'database'
+    | 'health-timer'
     | 'http-server'
+    | 'logger'
     | 'session-activity-sync'
     | 'whatsapp-sessions';
 }
@@ -848,17 +854,30 @@ export const startChatSyncScheduler = ({
 export const shutdownResources = async ({
   chatSyncScheduler,
   database,
+  healthTimer,
+  logger,
   sessionActivitySyncLoop,
   server,
   sessionManager
 }: {
   chatSyncScheduler?: ChatSyncScheduler;
   database: Database;
+  healthTimer?: HealthLogger;
+  logger: Logger;
   sessionActivitySyncLoop?: SessionActivitySyncLoop;
   server: HttpServer;
   sessionManager: SessionManager;
 }): Promise<ShutdownFailure[]> => {
   const failures: ShutdownFailure[] = [];
+
+  try {
+    healthTimer?.stop();
+  } catch (error) {
+    failures.push({
+      operation: 'health-timer',
+      error: error instanceof Error ? error.message : 'Unknown shutdown error'
+    });
+  }
 
   try {
     await chatSyncScheduler?.stop();
@@ -913,12 +932,22 @@ export const shutdownResources = async ({
     });
   }
 
+  try {
+    logger.close();
+  } catch (error) {
+    failures.push({
+      operation: 'logger',
+      error: error instanceof Error ? error.message : 'Unknown shutdown error'
+    });
+  }
+
   return failures;
 };
 
 export const createGracefulShutdown = ({
   chatSyncScheduler,
   database,
+  healthTimer,
   logger,
   sessionActivitySyncLoop,
   server,
@@ -926,6 +955,7 @@ export const createGracefulShutdown = ({
 }: {
   chatSyncScheduler?: ChatSyncScheduler;
   database: Database;
+  healthTimer?: HealthLogger;
   logger: Logger;
   sessionActivitySyncLoop?: SessionActivitySyncLoop;
   server: HttpServer;
@@ -948,6 +978,8 @@ export const createGracefulShutdown = ({
     const failedOperations = await shutdownResources({
       chatSyncScheduler,
       database,
+      healthTimer,
+      logger,
       sessionActivitySyncLoop,
       server,
       sessionManager
@@ -1077,9 +1109,17 @@ export const bootstrap = async (): Promise<void> => {
       enabled: chatSyncEnabled,
       ready: chatSyncEnabled
     });
+    const healthTimer = startHealthLogger({
+      intervalMs: parsePositiveInteger(
+        process.env.LOG_HEALTH_INTERVAL_MS,
+        60_000
+      ),
+      logger
+    });
     const shutdown = createGracefulShutdown({
       chatSyncScheduler,
       database,
+      healthTimer,
       logger,
       sessionActivitySyncLoop,
       server,

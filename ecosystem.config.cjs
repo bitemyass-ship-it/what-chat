@@ -53,7 +53,9 @@ const backendProductionEnv = pickDefined({
   WHATSAPP_CHAT_SYNC_EMPLOYEE_CONCURRENCY:
     process.env.WHATSAPP_CHAT_SYNC_EMPLOYEE_CONCURRENCY,
   WHATSAPP_SESSION_ACTIVITY_SYNC_INTERVAL_MS:
-    process.env.WHATSAPP_SESSION_ACTIVITY_SYNC_INTERVAL_MS
+    process.env.WHATSAPP_SESSION_ACTIVITY_SYNC_INTERVAL_MS,
+  LOG_DIR: requirePersistentBackendPath('LOG_DIR'),
+  LOG_HEALTH_INTERVAL_MS: process.env.LOG_HEALTH_INTERVAL_MS
 });
 
 const frontendProductionEnv = pickDefined({

@@ -5,9 +5,12 @@ import { DEV_EMPLOYEE_CODE, seedDevData } from '../../scripts/reset-dev-data';
 
 describe('reset-dev-data seed', () => {
   const createLogger = (): Logger => ({
+    close: jest.fn(),
+    error: jest.fn(),
+    health: jest.fn(),
+    http: jest.fn(),
     info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn()
+    warn: jest.fn()
   });
 
   let database: Database | undefined;

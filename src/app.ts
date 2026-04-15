@@ -5,6 +5,8 @@ import type {
   MessagesRepository
 } from './database/types';
 import { createAuthMiddleware } from './middleware/auth';
+import { createErrorLogger } from './middleware/error-logger';
+import { createHttpRequestLogger } from './middleware/http-logger';
 import { createAuthRouter } from './routes/auth';
 import { createEmployeesRouter } from './routes/employees';
 import type { Logger, SessionManager } from './types/whatsapp';
@@ -85,6 +87,7 @@ export const createApp = ({
   };
 
   app.disable('x-powered-by');
+  app.use(createHttpRequestLogger({ logger }));
   app.get('/health', (_request, response) => {
     logger.info('Health check requested');
     response.status(200).send('ok');
@@ -111,6 +114,7 @@ export const createApp = ({
     sessionManager
   }));
   app.use(handleJsonParseError);
+  app.use(createErrorLogger({ logger }));
 
   return app;
 };

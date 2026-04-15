@@ -1,8 +1,11 @@
 describe('createMessageHandler', () => {
   const createLogger = () => ({
+    close: jest.fn(),
+    error: jest.fn(),
+    health: jest.fn(),
+    http: jest.fn(),
     info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn()
+    warn: jest.fn()
   });
 
   it('should format incoming message', async () => {

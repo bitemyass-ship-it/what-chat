@@ -11,9 +11,12 @@ import type { Logger } from '../../src/types/whatsapp';
 
 describe('employees repository', () => {
   const createLogger = (): Logger => ({
+    close: jest.fn(),
+    error: jest.fn(),
+    health: jest.fn(),
+    http: jest.fn(),
     info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn()
+    warn: jest.fn()
   });
 
   let database: Database | undefined;

@@ -32,9 +32,12 @@ describe('createWhatsappClientFactory', () => {
     const clientInstance = { initialize: jest.fn(), on: jest.fn() };
     const authStrategy = { strategy: 'local-auth' };
     const logger: Logger = {
+      close: jest.fn(),
+      error: jest.fn(),
+      health: jest.fn(),
+      http: jest.fn(),
       info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn()
+      warn: jest.fn()
     };
 
     MockedLocalAuth.mockImplementation(() => authStrategy);
@@ -66,9 +69,12 @@ describe('createWhatsappClientFactory', () => {
   it('should use LocalAuth with unique clientId', () => {
     const projectRoot = '/app/root';
     const logger: Logger = {
+      close: jest.fn(),
+      error: jest.fn(),
+      health: jest.fn(),
+      http: jest.fn(),
       info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn()
+      warn: jest.fn()
     };
 
     MockedLocalAuth.mockImplementation(() => ({}));
@@ -97,9 +103,12 @@ describe('createWhatsappClientFactory', () => {
 
   it('should derive LocalAuth config from an explicit session storage path override', () => {
     const logger: Logger = {
+      close: jest.fn(),
+      error: jest.fn(),
+      health: jest.fn(),
+      http: jest.fn(),
       info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn()
+      warn: jest.fn()
     };
 
     MockedClient.mockImplementation(() => ({

@@ -41,7 +41,10 @@ const MIN_CALLS_PER_CHAT = 1;
 const MAX_CALLS_PER_CHAT = 4;
 
 const silentLogger: Logger = {
+  close: () => undefined,
   error: () => undefined,
+  health: () => undefined,
+  http: () => undefined,
   info: () => undefined,
   warn: () => undefined
 };

@@ -64,10 +64,38 @@ export interface WhatsappClientFactory {
   ): WhatsappSessionClient;
 }
 
+export interface HttpLogEntry {
+  contentLength?: number;
+  durationMs: number;
+  ip: string;
+  method: string;
+  status: number;
+  url: string;
+  userAgent?: string;
+}
+
+export interface HealthLogEntry {
+  memory: {
+    external: number;
+    heapTotal: number;
+    heapUsed: number;
+    rss: number;
+  };
+  memoryMb: {
+    heapTotal: number;
+    heapUsed: number;
+    rss: number;
+  };
+  uptimeSeconds: number;
+}
+
 export interface Logger {
+  close(): void;
+  error(message: string, meta?: Record<string, unknown>): void;
+  health(entry: HealthLogEntry): void;
+  http(entry: HttpLogEntry): void;
   info(message: string, meta?: Record<string, unknown>): void;
   warn(message: string, meta?: Record<string, unknown>): void;
-  error(message: string, meta?: Record<string, unknown>): void;
 }
 
 export interface QrTerminal {

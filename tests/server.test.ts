@@ -14,6 +14,15 @@ import { requireAuthPassword } from '../src/utils/env';
 import { resolveSessionStoragePath } from '../src/whatsapp/client';
 
 describe('shutdownResources', () => {
+  const createMockLogger = (): Logger => ({
+    close: jest.fn(),
+    error: jest.fn(),
+    health: jest.fn(),
+    http: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn()
+  });
+
   it('should stop both loops before http and whatsapp shutdown complete', async () => {
     const callOrder: string[] = [];
     const chatSyncScheduler = {
@@ -57,9 +66,11 @@ describe('shutdownResources', () => {
       messages: {} as Database['messages']
     } as Database;
 
+    const logger = createMockLogger();
     const failures = await shutdownResources({
       chatSyncScheduler,
       database,
+      logger,
       sessionActivitySyncLoop,
       server,
       sessionManager
@@ -77,6 +88,7 @@ describe('shutdownResources', () => {
       'whatsapp:end',
       'database:close'
     ]);
+    expect(logger.close).toHaveBeenCalled();
   });
 
   it('should stop teardown when chat sync scheduler shutdown fails', async () => {
@@ -104,6 +116,7 @@ describe('shutdownResources', () => {
         })
       },
       database,
+      logger: createMockLogger(),
       sessionActivitySyncLoop: {
         stop: jest.fn()
       },
@@ -134,9 +147,12 @@ describe('startChatSyncScheduler', () => {
 
   it('should start the first chat sync batch only after the configured initial delay', async () => {
     const logger: Logger = {
+      close: jest.fn(),
+      error: jest.fn(),
+      health: jest.fn(),
+      http: jest.fn(),
       info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn()
+      warn: jest.fn()
     };
     const syncEmployee = jest.fn().mockResolvedValue(undefined);
     const sessionManager: SessionManager = {
@@ -212,9 +228,12 @@ describe('startChatSyncScheduler', () => {
 
   it('should abort the in-flight chat sync batch when the scheduler stops', async () => {
     const logger: Logger = {
+      close: jest.fn(),
+      error: jest.fn(),
+      health: jest.fn(),
+      http: jest.fn(),
       info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn()
+      warn: jest.fn()
     };
     const syncEmployee = jest.fn(
       async (
@@ -303,9 +322,12 @@ describe('startChatSyncScheduler', () => {
 
 describe('loadEmployeeIds', () => {
   const createLogger = (): Logger => ({
+    close: jest.fn(),
+    error: jest.fn(),
+    health: jest.fn(),
+    http: jest.fn(),
     info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn()
+    warn: jest.fn()
   });
 
   it('should ignore legacy env values after the database is already populated', () => {
@@ -360,9 +382,12 @@ describe('requireAuthPassword', () => {
 
 describe('restorePersistedSessions', () => {
   const createLogger = (): Logger => ({
+    close: jest.fn(),
+    error: jest.fn(),
+    health: jest.fn(),
+    http: jest.fn(),
     info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn()
+    warn: jest.fn()
   });
 
   it('should restore only active employees with persisted session storage and keep failures non-fatal', async () => {
@@ -504,9 +529,12 @@ describe('restorePersistedSessions', () => {
 
 describe('reconcileEmployeeActivityFromSessions', () => {
   const createLogger = (): Logger => ({
+    close: jest.fn(),
+    error: jest.fn(),
+    health: jest.fn(),
+    http: jest.fn(),
     info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn()
+    warn: jest.fn()
   });
 
   it('should mark an employee active when the runtime WhatsApp session is connected', async () => {
