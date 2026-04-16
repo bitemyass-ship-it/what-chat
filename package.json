@@ -26,7 +26,7 @@
   },
   "devDependencies": {
     "@types/express": "latest",
-    "@types/jest": "latest",
+    "@types/jest": "^30.0.0",
     "@types/node": "latest",
     "@types/qrcode-terminal": "latest",
     "jest": "latest",

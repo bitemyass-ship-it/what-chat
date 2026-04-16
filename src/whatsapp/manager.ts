@@ -26,14 +26,28 @@ interface CreateSessionManagerOptions {
   clientFactory: WhatsappClientFactory;
   employees?: EmployeesRepository;
   logger: Logger;
+  maxConcurrentInitializations?: number;
   messageHandler?: MessageHandler;
   qr: QrTerminal;
+  reconnect?: Partial<ReconnectConfig>;
+  shutdownQueueDrainTimeoutMs?: number;
 }
 
 interface ActiveSession {
   client: WhatsappSessionClient;
+  cleanupOperation?: Promise<void>;
+  cleanupStarted: boolean;
+  reconnectDisabled: boolean;
   sessionKey: string;
   sessionStoragePath: string | null;
+  stopRequested: boolean;
+}
+
+interface ReconnectConfig {
+  enabled: boolean;
+  initialDelayMs: number;
+  maxAttempts: number;
+  maxDelayMs: number;
 }
 
 const extractPhoneNumberFromChatId = (chatId: string): string | undefined => {
@@ -402,11 +416,43 @@ const destroySessionClient = async (
 
 const nowIso = (): string => new Date().toISOString();
 const DEFAULT_CHAT_SYNC_MESSAGE_LIMIT = 50;
+const DEFAULT_MAX_CONCURRENT_INITIALIZATIONS = 1;
+const DEFAULT_RECONNECT_INITIAL_DELAY_MS = 5_000;
+const DEFAULT_RECONNECT_MAX_ATTEMPTS = 5;
+const DEFAULT_RECONNECT_MAX_DELAY_MS = 60_000;
+const DEFAULT_SHUTDOWN_QUEUE_DRAIN_TIMEOUT_MS = 10_000;
 const POLLED_CALL_BODY_BY_STATUS: Record<CallPayload['status'], string> = {
   incoming: 'Incoming call',
   missed: 'Missed call',
   outgoing: 'Outgoing call'
 };
+
+const resolveReconnectConfig = (
+  reconnect?: Partial<ReconnectConfig>
+): ReconnectConfig => ({
+  enabled: reconnect?.enabled ?? true,
+  initialDelayMs: Math.max(
+    1,
+    reconnect?.initialDelayMs ?? DEFAULT_RECONNECT_INITIAL_DELAY_MS
+  ),
+  maxAttempts: Math.max(
+    0,
+    reconnect?.maxAttempts ?? DEFAULT_RECONNECT_MAX_ATTEMPTS
+  ),
+  maxDelayMs: Math.max(
+    1,
+    reconnect?.maxDelayMs ?? DEFAULT_RECONNECT_MAX_DELAY_MS
+  )
+});
+
+const resolveReconnectDelayMs = (
+  attempt: number,
+  reconnect: ReconnectConfig
+): number =>
+  Math.min(
+    reconnect.maxDelayMs,
+    reconnect.initialDelayMs * 2 ** Math.max(0, attempt - 1)
+  );
 
 const createAbortError = (message = 'WhatsApp chat sync aborted'): Error => {
   const error = new Error(message);
@@ -539,14 +585,16 @@ const destroySessionClientBestEffort = async (
   employeeId: string,
   client: WhatsappSessionClient,
   logger: Logger
-): Promise<void> => {
+): Promise<boolean> => {
   try {
     await destroySessionClient(client);
+    return true;
   } catch (error) {
     logger.error('WhatsApp session cleanup failed', {
       employeeId,
       error: error instanceof Error ? error.message : 'Unknown error'
     });
+    return false;
   }
 };
 
@@ -565,7 +613,9 @@ const bindLifecycleHandlers = (
       markEventAt?: boolean;
     }
   ) => SessionHealth,
-  onDisconnected: () => Promise<void>
+  onReady: () => void,
+  onAuthFailure: () => void,
+  onDisconnected: (reason: string) => Promise<void>
 ): void => {
   const processMessage = async (message: unknown): Promise<void> => {
     const payload = message as MessagePayload;
@@ -645,6 +695,7 @@ const bindLifecycleHandlers = (
   });
 
   client.on('ready', () => {
+    onReady();
     updateSessionHealth(employeeId, {
       lastDisconnectReason: null,
       lastError: null,
@@ -691,6 +742,7 @@ const bindLifecycleHandlers = (
     const errorMessage =
       typeof message === 'string' ? message : 'Unknown authentication error';
 
+    onAuthFailure();
     updateSessionHealth(employeeId, {
       lastError: errorMessage,
       qrCode: null,
@@ -702,7 +754,7 @@ const bindLifecycleHandlers = (
     });
   });
 
-  client.on('disconnected', (reason: unknown) => {
+  client.on('disconnected', async (reason: unknown) => {
     const disconnectReason =
       typeof reason === 'string' ? reason : 'Unknown disconnect reason';
 
@@ -711,11 +763,11 @@ const bindLifecycleHandlers = (
       qrCode: null,
       runtimeStatus: 'disconnected'
     });
-    void onDisconnected();
     logger.warn('WhatsApp session disconnected', {
       employeeId,
       reason: disconnectReason
     });
+    await onDisconnected(disconnectReason);
   });
 };
 
@@ -724,13 +776,124 @@ export const createSessionManager = ({
   clientFactory,
   employees,
   logger,
+  maxConcurrentInitializations = DEFAULT_MAX_CONCURRENT_INITIALIZATIONS,
   callHandler = createCallHandler({ logger }),
   messageHandler = createMessageHandler({ logger }),
-  qr
+  qr,
+  reconnect,
+  shutdownQueueDrainTimeoutMs = DEFAULT_SHUTDOWN_QUEUE_DRAIN_TIMEOUT_MS
 }: CreateSessionManagerOptions): SessionManager => {
   const sessions = new Map<string, ActiveSession>();
   const sessionHealth = new Map<string, SessionHealth>();
+  const sessionLifecycleOperations = new Map<string, Promise<void>>();
   const startSessionOperations = new Map<string, Promise<void>>();
+  const reconnectConfig = resolveReconnectConfig(reconnect);
+  const reconnectAttempts = new Map<string, number>();
+  const reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const normalizedMaxConcurrentInitializations = Math.max(
+    1,
+    maxConcurrentInitializations
+  );
+  const pendingInitializationSlots: Array<{
+    reject: (error: Error) => void;
+    resolve: () => void;
+  }> = [];
+  let activeInitializationCount = 0;
+  let isShuttingDown = false;
+
+  const enqueueSessionLifecycleOperation = async <T>(
+    employeeId: string,
+    operation: () => Promise<T>
+  ): Promise<T> => {
+    const previousOperation =
+      sessionLifecycleOperations.get(employeeId) ?? Promise.resolve();
+    const operationPromise = previousOperation
+      .catch(() => undefined)
+      .then(operation);
+    const queueTail = operationPromise.then(
+      () => undefined,
+      () => undefined
+    );
+
+    sessionLifecycleOperations.set(employeeId, queueTail);
+    void queueTail.finally(() => {
+      if (sessionLifecycleOperations.get(employeeId) === queueTail) {
+        sessionLifecycleOperations.delete(employeeId);
+      }
+    });
+
+    return operationPromise;
+  };
+
+  const waitForInitializationSlot = async (): Promise<void> => {
+    if (isShuttingDown) {
+      throw new Error('WhatsApp session manager is shutting down');
+    }
+
+    if (activeInitializationCount < normalizedMaxConcurrentInitializations) {
+      activeInitializationCount += 1;
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      pendingInitializationSlots.push({ reject, resolve });
+    });
+    activeInitializationCount += 1;
+  };
+
+  const releaseInitializationSlot = (): void => {
+    activeInitializationCount = Math.max(0, activeInitializationCount - 1);
+    const next = pendingInitializationSlots.shift();
+
+    next?.resolve();
+  };
+
+  const rejectPendingInitializationSlots = (error: Error): void => {
+    while (pendingInitializationSlots.length > 0) {
+      const waiter = pendingInitializationSlots.shift();
+
+      waiter?.reject(error);
+    }
+  };
+
+  const initializeClient = async (
+    employeeId: string,
+    sessionKey: string,
+    client: WhatsappSessionClient
+  ): Promise<void> => {
+    await waitForInitializationSlot();
+
+    try {
+      logger.info('WhatsApp session client initialize started', {
+        employeeId,
+        sessionKey
+      });
+      await client.initialize();
+      logger.info('WhatsApp session client initialize finished', {
+        employeeId,
+        sessionKey
+      });
+    } finally {
+      releaseInitializationSlot();
+    }
+  };
+
+  const clearReconnectTimer = (employeeId: string): void => {
+    const timer = reconnectTimers.get(employeeId);
+
+    if (!timer) {
+      return;
+    }
+
+    clearTimeout(timer);
+    reconnectTimers.delete(employeeId);
+  };
+
+  const clearAllReconnectTimers = (): void => {
+    for (const employeeId of reconnectTimers.keys()) {
+      clearReconnectTimer(employeeId);
+    }
+  };
 
   const resolveSessionConfig = (
     employeeId: string
@@ -890,12 +1053,17 @@ export const createSessionManager = ({
       );
     }
 
+    let stateProbeTimeout: ReturnType<typeof setTimeout> | undefined;
+
     try {
       const whatsappState = await Promise.race([
         client.getState(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('getState timeout')), 4_000)
-        )
+        new Promise<never>((_, reject) => {
+          stateProbeTimeout = setTimeout(
+            () => reject(new Error('getState timeout')),
+            4_000
+          );
+        })
       ]);
       const connectedByState = isConnectedWhatsappState(whatsappState);
       const currentHealth = buildSessionHealth(employeeId);
@@ -938,7 +1106,185 @@ export const createSessionManager = ({
           markEventAt: false
         }
       );
+    } finally {
+      if (stateProbeTimeout) {
+        clearTimeout(stateProbeTimeout);
+      }
     }
+  };
+
+  let startSessionQueued: (employeeId: string) => Promise<void> = async () => {
+    throw new Error('WhatsApp session manager is not initialized');
+  };
+
+  const scheduleReconnect = (
+    employeeId: string,
+    reason: string
+  ): void => {
+    if (isShuttingDown) {
+      logger.info('WhatsApp session reconnect skipped: shutting down', {
+        employeeId,
+        reason
+      });
+      return;
+    }
+
+    if (!reconnectConfig.enabled || reconnectConfig.maxAttempts === 0) {
+      logger.info('WhatsApp session reconnect skipped', {
+        employeeId,
+        reason,
+        reconnectEnabled: reconnectConfig.enabled
+      });
+      return;
+    }
+
+    if (reconnectTimers.has(employeeId)) {
+      logger.warn('WhatsApp session reconnect already scheduled', {
+        employeeId,
+        reason
+      });
+      return;
+    }
+
+    const nextAttempt = (reconnectAttempts.get(employeeId) ?? 0) + 1;
+
+    if (nextAttempt > reconnectConfig.maxAttempts) {
+      const errorMessage =
+        `WhatsApp session reconnect exhausted after ${reconnectConfig.maxAttempts} attempt(s)`;
+
+      reconnectAttempts.delete(employeeId);
+      updateSessionHealth(employeeId, {
+        hasRuntimeSession: false,
+        isSessionActive: false,
+        lastError: errorMessage,
+        qrCode: null,
+        runtimeStatus: 'failed',
+        whatsappState: null
+      });
+      logger.error('WhatsApp session reconnect exhausted', {
+        employeeId,
+        maxAttempts: reconnectConfig.maxAttempts,
+        reason
+      });
+      return;
+    }
+
+    reconnectAttempts.set(employeeId, nextAttempt);
+    const delayMs = resolveReconnectDelayMs(nextAttempt, reconnectConfig);
+    const timer = setTimeout(() => {
+      reconnectTimers.delete(employeeId);
+
+      if (isShuttingDown) {
+        logger.info('WhatsApp session reconnect aborted: shutting down', {
+          employeeId,
+          reason
+        });
+        return;
+      }
+
+      logger.info('WhatsApp session reconnect attempt starting', {
+        attempt: nextAttempt,
+        delayMs,
+        employeeId,
+        reason
+      });
+      void startSessionQueued(employeeId).catch((error) => {
+        logger.error('WhatsApp session reconnect attempt failed', {
+          attempt: nextAttempt,
+          employeeId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          reason
+        });
+        scheduleReconnect(employeeId, 'reconnect_failed');
+      });
+    }, delayMs);
+
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+
+    reconnectTimers.set(employeeId, timer);
+    logger.warn('WhatsApp session reconnect scheduled', {
+      attempt: nextAttempt,
+      delayMs,
+      employeeId,
+      reason
+    });
+  };
+
+  const handleSessionDisconnected = async (
+    employeeId: string,
+    activeSession: ActiveSession,
+    reason: string
+  ): Promise<void> => {
+    if (activeSession.cleanupStarted) {
+      await activeSession.cleanupOperation;
+      return;
+    }
+
+    activeSession.cleanupStarted = true;
+    activeSession.cleanupOperation = enqueueSessionLifecycleOperation(
+      employeeId,
+      async () => {
+        if (activeSession.stopRequested) {
+          if (sessions.get(employeeId) === activeSession) {
+            sessions.delete(employeeId);
+          }
+
+          logger.info('WhatsApp session disconnected during intentional stop', {
+            employeeId,
+            reason
+          });
+          return;
+        }
+
+        const isCurrentSession = sessions.get(employeeId) === activeSession;
+
+        if (isCurrentSession) {
+          updateSessionHealth(employeeId, {
+            hasRuntimeSession: false,
+            isSessionActive: false,
+            qrCode: null
+          });
+        }
+
+        const cleanedUp = await destroySessionClientBestEffort(
+          employeeId,
+          activeSession.client,
+          logger
+        );
+
+        if (!isCurrentSession) {
+          logger.warn('Ignoring stale WhatsApp disconnect for replaced session', {
+            employeeId,
+            reason
+          });
+          return;
+        }
+
+        if (!cleanedUp) {
+          updateSessionHealth(employeeId, {
+            hasRuntimeSession: false,
+            isSessionActive: false,
+            lastError: 'WhatsApp session cleanup failed after disconnect',
+            qrCode: null,
+            runtimeStatus: 'failed',
+            whatsappState: null
+          });
+          return;
+        }
+
+        if (isCurrentSession) {
+          sessions.delete(employeeId);
+        }
+
+        if (!activeSession.reconnectDisabled) {
+          scheduleReconnect(employeeId, reason);
+        }
+      }
+    );
+
+    await activeSession.cleanupOperation;
   };
 
   const syncPolledMessage = async ({
@@ -1137,6 +1483,11 @@ export const createSessionManager = ({
   };
 
   const startSessionInternal = async (employeeId: string): Promise<void> => {
+    if (isShuttingDown) {
+      logger.info('WhatsApp session start aborted: shutting down', { employeeId });
+      return;
+    }
+
     const { sessionKey, sessionStoragePath } = resolveSessionConfig(employeeId);
     const existingSession = sessions.get(employeeId);
 
@@ -1145,6 +1496,7 @@ export const createSessionManager = ({
       existingSession.sessionKey === sessionKey &&
       existingSession.sessionStoragePath === sessionStoragePath
     ) {
+      clearReconnectTimer(employeeId);
       logger.warn('WhatsApp session already active', { employeeId });
       return;
     }
@@ -1157,8 +1509,18 @@ export const createSessionManager = ({
         previousSessionKey: existingSession.sessionKey,
         previousSessionStoragePath: existingSession.sessionStoragePath
       });
-      await destroySessionClient(existingSession.client);
+      existingSession.stopRequested = true;
+      clearReconnectTimer(employeeId);
+
+      try {
+        await destroySessionClient(existingSession.client);
+      } catch (error) {
+        existingSession.stopRequested = false;
+        throw error;
+      }
+
       sessions.delete(employeeId);
+      reconnectAttempts.delete(employeeId);
     }
 
     const conflictingEmployeeId = findEmployeeIdBySessionKey(
@@ -1182,6 +1544,7 @@ export const createSessionManager = ({
     }
 
     logger.info('Starting WhatsApp session', { employeeId });
+    clearReconnectTimer(employeeId);
     updateSessionHealth(employeeId, {
       hasRuntimeSession: true,
       isSessionActive: false,
@@ -1192,6 +1555,7 @@ export const createSessionManager = ({
       whatsappState: null
     });
 
+    let activeSession: ActiveSession | undefined;
     let client: WhatsappSessionClient | undefined;
 
     try {
@@ -1201,11 +1565,17 @@ export const createSessionManager = ({
           })
         : clientFactory.create(sessionKey);
       const activeClient = client;
-      sessions.set(employeeId, {
+      activeSession = {
         client: activeClient,
+        cleanupStarted: false,
+        reconnectDisabled: false,
         sessionKey,
-        sessionStoragePath
-      });
+        sessionStoragePath,
+        stopRequested: false
+      };
+
+      sessions.set(employeeId, activeSession);
+      const boundSession = activeSession;
       bindLifecycleHandlers(
         employeeId,
         activeClient,
@@ -1214,33 +1584,45 @@ export const createSessionManager = ({
         messageHandler,
         qr,
         updateSessionHealth,
-        async () => {
-          sessions.delete(employeeId);
-          updateSessionHealth(employeeId, {
-            hasRuntimeSession: false,
-            isSessionActive: false,
-            qrCode: null
-          });
-          await destroySessionClientBestEffort(employeeId, activeClient, logger);
+        () => {
+          reconnectAttempts.delete(employeeId);
+        },
+        () => {
+          boundSession.reconnectDisabled = true;
+          clearReconnectTimer(employeeId);
+        },
+        async (reason) => {
+          await handleSessionDisconnected(employeeId, boundSession, reason);
         }
       );
-      await activeClient.initialize();
+      await initializeClient(employeeId, sessionKey, activeClient);
     } catch (error) {
+      let cleanupSucceeded = true;
+
+      if (activeSession) {
+        activeSession.cleanupStarted = true;
+        activeSession.reconnectDisabled = true;
+        activeSession.stopRequested = true;
+      }
+
       if (client) {
         try {
           await destroySessionClient(client);
         } catch (cleanupError) {
+          cleanupSucceeded = false;
           logger.error('WhatsApp session cleanup failed after initialization error', {
             employeeId,
             error: cleanupError instanceof Error ? cleanupError.message : 'Unknown error'
           });
         } finally {
-          sessions.delete(employeeId);
+          if (cleanupSucceeded) {
+            sessions.delete(employeeId);
+          }
         }
       }
 
       updateSessionHealth(employeeId, {
-        hasRuntimeSession: false,
+        hasRuntimeSession: !cleanupSucceeded,
         isSessionActive: false,
         lastError: error instanceof Error ? error.message : 'Unknown error',
         qrCode: null,
@@ -1256,17 +1638,124 @@ export const createSessionManager = ({
     }
   };
 
+  const stopSessionInternal = async (employeeId: string): Promise<void> => {
+    const activeSession = sessions.get(employeeId);
+    const client = activeSession?.client;
+
+    if (!client) {
+      clearReconnectTimer(employeeId);
+      reconnectAttempts.delete(employeeId);
+      logger.warn('WhatsApp session not active', { employeeId });
+      return;
+    }
+
+    logger.info('Stopping WhatsApp session', { employeeId });
+    activeSession.stopRequested = true;
+    clearReconnectTimer(employeeId);
+
+    try {
+      await destroySessionClient(client);
+    } catch (error) {
+      activeSession.stopRequested = false;
+      throw error;
+    }
+
+    sessions.delete(employeeId);
+    reconnectAttempts.delete(employeeId);
+    updateSessionHealth(employeeId, {
+      hasRuntimeSession: false,
+      isSessionActive: false,
+      lastDisconnectReason: null,
+      lastError: null,
+      qrCode: null,
+      runtimeStatus: 'stopped',
+      whatsappState: null
+    });
+  };
+
+  startSessionQueued = async (employeeId: string): Promise<void> => {
+    if (isShuttingDown) {
+      logger.info('WhatsApp session start skipped: shutting down', { employeeId });
+      return;
+    }
+
+    const inFlightStart = startSessionOperations.get(employeeId);
+
+    if (inFlightStart) {
+      await inFlightStart;
+      return;
+    }
+
+    let startOperation: Promise<void>;
+
+    startOperation = enqueueSessionLifecycleOperation(
+      employeeId,
+      () => startSessionInternal(employeeId)
+    ).finally(() => {
+      if (startSessionOperations.get(employeeId) === startOperation) {
+        startSessionOperations.delete(employeeId);
+      }
+    });
+    startSessionOperations.set(employeeId, startOperation);
+    await startOperation;
+  };
+
   return {
     async getSessionHealth(employeeId: string): Promise<SessionHealth> {
       return probeWhatsappState(employeeId);
     },
 
     async shutdown(): Promise<void> {
+      isShuttingDown = true;
+      clearAllReconnectTimers();
+
       const activeSessions = Array.from(sessions.entries());
       const employeeIds = activeSessions.map(([employeeId]) => employeeId);
 
       logger.info('Shutting down WhatsApp sessions', { employeeIds });
+
+      for (const [, activeSession] of activeSessions) {
+        activeSession.stopRequested = true;
+        activeSession.reconnectDisabled = true;
+      }
+
+      rejectPendingInitializationSlots(
+        new Error('WhatsApp session manager is shutting down')
+      );
+
+      const destroyResults = Promise.allSettled(
+        activeSessions.map(([employeeId, activeSession]) =>
+          destroySessionClientBestEffort(employeeId, activeSession.client, logger)
+        )
+      );
+
+      const queueDrain = Promise.allSettled([
+        ...sessionLifecycleOperations.values(),
+        ...startSessionOperations.values()
+      ]);
+      const combinedWork = Promise.all([destroyResults, queueDrain]).then(
+        () => 'drained' as const
+      );
+      const timeout = new Promise<'timeout'>((resolve) => {
+        const timer = setTimeout(() => resolve('timeout'), shutdownQueueDrainTimeoutMs);
+
+        if (typeof timer.unref === 'function') {
+          timer.unref();
+        }
+      });
+
+      const drainOutcome = await Promise.race([combinedWork, timeout]);
+
+      if (drainOutcome === 'timeout') {
+        logger.warn('WhatsApp session lifecycle queue did not drain before shutdown timeout', {
+          employeeIds,
+          timeoutMs: shutdownQueueDrainTimeoutMs
+        });
+      }
+
+      clearAllReconnectTimers();
       sessions.clear();
+
       for (const employeeId of employeeIds) {
         updateSessionHealth(employeeId, {
           hasRuntimeSession: false,
@@ -1276,12 +1765,6 @@ export const createSessionManager = ({
           whatsappState: null
         });
       }
-
-      await Promise.allSettled(
-        activeSessions.map(([employeeId, activeSession]) =>
-          destroySessionClientBestEffort(employeeId, activeSession.client, logger)
-        )
-      );
     },
 
     async syncChats(
@@ -1294,51 +1777,20 @@ export const createSessionManager = ({
     },
 
     async stopSession(employeeId: string): Promise<void> {
-      const activeSession = sessions.get(employeeId);
-      const client = activeSession?.client;
-
-      if (!client) {
-        logger.warn('WhatsApp session not active', { employeeId });
-        return;
-      }
-
-      logger.info('Stopping WhatsApp session', { employeeId });
-      await destroySessionClient(client);
-      sessions.delete(employeeId);
-      updateSessionHealth(employeeId, {
-        hasRuntimeSession: false,
-        isSessionActive: false,
-        lastDisconnectReason: null,
-        lastError: null,
-        qrCode: null,
-        runtimeStatus: 'stopped',
-        whatsappState: null
-      });
+      await enqueueSessionLifecycleOperation(
+        employeeId,
+        () => stopSessionInternal(employeeId)
+      );
     },
 
     async startSession(employeeId: string): Promise<void> {
-      const inFlightStart = startSessionOperations.get(employeeId);
-
-      if (inFlightStart) {
-        await inFlightStart;
-        return;
-      }
-
-      let startOperation: Promise<void>;
-
-      startOperation = startSessionInternal(employeeId).finally(() => {
-        if (startSessionOperations.get(employeeId) === startOperation) {
-          startSessionOperations.delete(employeeId);
-        }
-      });
-      startSessionOperations.set(employeeId, startOperation);
-      await startOperation;
+      await startSessionQueued(employeeId);
     },
 
     async startAll(employeeIds: string[]): Promise<void> {
       logger.info('Starting WhatsApp sessions batch', { employeeIds });
       const results = await Promise.allSettled(
-        employeeIds.map((employeeId) => this.startSession(employeeId))
+        employeeIds.map((employeeId) => startSessionQueued(employeeId))
       );
       const failedEmployeeIds = employeeIds.filter(
         (_employeeId, index) => results[index]?.status === 'rejected'

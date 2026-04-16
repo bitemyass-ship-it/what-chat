@@ -22,7 +22,7 @@ describe('createSessionManager', () => {
   });
 
   const createClient = () => {
-    const handlers = new Map<string, (...args: unknown[]) => void>();
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
     const client: WhatsappSessionClient = {
       destroy: jest.fn().mockResolvedValue(undefined),
       getContactLidAndPhone: jest.fn().mockResolvedValue([]),
@@ -34,6 +34,20 @@ describe('createSessionManager', () => {
     };
 
     return { client, handlers };
+  };
+
+  const handlersToPromise = async (
+    handlers: Map<string, (...args: unknown[]) => unknown>,
+    event: string,
+    ...args: unknown[]
+  ): Promise<void> => {
+    await handlers.get(event)?.(...args);
+  };
+
+  const flushLifecycleQueue = async (): Promise<void> => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
   };
 
   const createEmployeesRepository = (
@@ -78,6 +92,9 @@ describe('createSessionManager', () => {
       logger,
       qr: {
         generate: jest.fn()
+      },
+      reconnect: {
+        enabled: false
       }
     });
 
@@ -222,6 +239,9 @@ describe('createSessionManager', () => {
       logger,
       qr: {
         generate: jest.fn()
+      },
+      reconnect: {
+        enabled: false
       }
     });
 
@@ -251,6 +271,9 @@ describe('createSessionManager', () => {
       logger,
       qr: {
         generate: jest.fn()
+      },
+      reconnect: {
+        enabled: false
       }
     });
 
@@ -261,7 +284,7 @@ describe('createSessionManager', () => {
     expect(client.destroy).toHaveBeenCalledTimes(1);
   });
 
-  it('should allow retry after initialization and cleanup both fail', async () => {
+  it('should keep the failed session guard when initialization cleanup fails', async () => {
     const first = createClient();
     const second = createClient();
     const factory: WhatsappClientFactory = {
@@ -285,8 +308,8 @@ describe('createSessionManager', () => {
     await expect(manager.startSession('employee-1')).rejects.toThrow('auth failed');
     await expect(manager.startSession('employee-1')).resolves.toBeUndefined();
 
-    expect(factory.create).toHaveBeenCalledTimes(2);
-    expect(second.client.initialize).toHaveBeenCalledTimes(1);
+    expect(factory.create).toHaveBeenCalledTimes(1);
+    expect(second.client.initialize).not.toHaveBeenCalled();
     expect(logger.error).toHaveBeenCalledWith(
       'WhatsApp session cleanup failed after initialization error',
       {
@@ -294,6 +317,13 @@ describe('createSessionManager', () => {
         error: 'destroy failed'
       }
     );
+
+    await expect(manager.stopSession('employee-1')).resolves.toBeUndefined();
+    await expect(manager.startSession('employee-1')).resolves.toBeUndefined();
+
+    expect(first.client.destroy).toHaveBeenCalledTimes(2);
+    expect(factory.create).toHaveBeenCalledTimes(2);
+    expect(second.client.initialize).toHaveBeenCalledTimes(1);
   });
 
   it('should restart an active runtime session when the employee phone number changes', async () => {
@@ -368,6 +398,8 @@ describe('createSessionManager', () => {
     const firstStart = manager.startSession('anna');
     const secondStart = manager.startSession('anna');
 
+    await flushLifecycleQueue();
+
     expect(factory.create).toHaveBeenCalledTimes(1);
     expect(client.initialize).toHaveBeenCalledTimes(1);
 
@@ -377,6 +409,216 @@ describe('createSessionManager', () => {
       Promise.all([firstStart, secondStart])
     ).resolves.toEqual([undefined, undefined]);
     expect(factory.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('should serialize browser initialization across different employees', async () => {
+    const first = createClient();
+    const second = createClient();
+    let resolveInitialize: (() => void) | undefined;
+    const initializePromise = new Promise<void>((resolve) => {
+      resolveInitialize = resolve;
+    });
+    const factory: WhatsappClientFactory = {
+      create: jest
+        .fn()
+        .mockReturnValueOnce(first.client)
+        .mockReturnValueOnce(second.client)
+    };
+    const logger = createLogger();
+    const manager = createSessionManager({
+      clientFactory: factory,
+      logger,
+      qr: {
+        generate: jest.fn()
+      }
+    });
+
+    (first.client.initialize as jest.Mock).mockReturnValueOnce(initializePromise);
+
+    const firstStart = manager.startSession('employee-1');
+    const secondStart = manager.startSession('employee-2');
+
+    await flushLifecycleQueue();
+
+    expect(factory.create).toHaveBeenCalledTimes(2);
+    expect(first.client.initialize).toHaveBeenCalledTimes(1);
+    expect(second.client.initialize).not.toHaveBeenCalled();
+
+    resolveInitialize?.();
+
+    await expect(firstStart).resolves.toBeUndefined();
+    await expect(secondStart).resolves.toBeUndefined();
+    expect(second.client.initialize).toHaveBeenCalledTimes(1);
+  });
+
+  it('should wait for stop cleanup before restarting the same employee session', async () => {
+    const first = createClient();
+    const second = createClient();
+    let resolveDestroy: (() => void) | undefined;
+    const destroyPromise = new Promise<void>((resolve) => {
+      resolveDestroy = resolve;
+    });
+    const factory: WhatsappClientFactory = {
+      create: jest
+        .fn()
+        .mockReturnValueOnce(first.client)
+        .mockReturnValueOnce(second.client)
+    };
+    const logger = createLogger();
+    const manager = createSessionManager({
+      clientFactory: factory,
+      logger,
+      qr: {
+        generate: jest.fn()
+      }
+    });
+
+    await manager.startSession('employee-1');
+    (first.client.destroy as jest.Mock).mockReturnValueOnce(destroyPromise);
+
+    const stopOperation = manager.stopSession('employee-1');
+
+    await flushLifecycleQueue();
+
+    expect(first.client.destroy).toHaveBeenCalledTimes(1);
+
+    const restartOperation = manager.startSession('employee-1');
+
+    await flushLifecycleQueue();
+
+    expect(factory.create).toHaveBeenCalledTimes(1);
+
+    resolveDestroy?.();
+
+    await expect(stopOperation).resolves.toBeUndefined();
+    await expect(restartOperation).resolves.toBeUndefined();
+    expect(factory.create).toHaveBeenCalledTimes(2);
+    expect(second.client.initialize).toHaveBeenCalledTimes(1);
+  });
+
+  it('should ignore stale disconnect events from a replaced employee session', async () => {
+    const first = createClient();
+    const second = createClient();
+    const factory: WhatsappClientFactory = {
+      create: jest
+        .fn()
+        .mockReturnValueOnce(first.client)
+        .mockReturnValueOnce(second.client)
+    };
+    const employees = createEmployeesRepository({
+      'employee-1': '380991112233'
+    });
+    const logger = createLogger();
+    const manager = createSessionManager({
+      clientFactory: factory,
+      employees,
+      logger,
+      qr: {
+        generate: jest.fn()
+      }
+    });
+
+    await manager.startSession('employee-1');
+    (employees.findByCode as jest.Mock).mockReturnValue({
+      id: 1,
+      code: 'employee-1',
+      displayName: null,
+      phoneNumber: '380991112244',
+      isActive: true,
+      sessionDir: null,
+      createdAt: '2026-03-29T19:00:00.000Z',
+      updatedAt: '2026-03-29T19:00:00.000Z'
+    });
+    await manager.startSession('employee-1');
+
+    await handlersToPromise(first.handlers, 'disconnected', 'NAVIGATION');
+
+    await expect(manager.getSessionHealth('employee-1')).resolves.toEqual(
+      expect.objectContaining({
+        hasRuntimeSession: true,
+        isSessionActive: true,
+        runtimeStatus: 'ready',
+        whatsappState: 'CONNECTED'
+      })
+    );
+    expect(second.client.destroy).not.toHaveBeenCalled();
+  });
+
+  it('should reconnect after an unexpected disconnect only after cleanup completes', async () => {
+    jest.useFakeTimers();
+
+    try {
+      const first = createClient();
+      const second = createClient();
+      const factory: WhatsappClientFactory = {
+        create: jest
+          .fn()
+          .mockReturnValueOnce(first.client)
+          .mockReturnValueOnce(second.client)
+      };
+      const logger = createLogger();
+      const manager = createSessionManager({
+        clientFactory: factory,
+        logger,
+        qr: {
+          generate: jest.fn()
+        },
+        reconnect: {
+          initialDelayMs: 25,
+          maxAttempts: 1,
+          maxDelayMs: 25
+        }
+      });
+
+      await manager.startSession('employee-1');
+      await handlersToPromise(first.handlers, 'disconnected', 'NAVIGATION');
+
+      expect(first.client.destroy).toHaveBeenCalledTimes(1);
+      expect(factory.create).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(25);
+      await flushLifecycleQueue();
+
+      expect(factory.create).toHaveBeenCalledTimes(2);
+      expect(second.client.initialize).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('should not create a replacement client when disconnect cleanup fails', async () => {
+    const first = createClient();
+    const second = createClient();
+    const factory: WhatsappClientFactory = {
+      create: jest
+        .fn()
+        .mockReturnValueOnce(first.client)
+        .mockReturnValueOnce(second.client)
+    };
+    const logger = createLogger();
+    const manager = createSessionManager({
+      clientFactory: factory,
+      logger,
+      qr: {
+        generate: jest.fn()
+      },
+      reconnect: {
+        enabled: false
+      }
+    });
+
+    (first.client.destroy as jest.Mock).mockRejectedValueOnce(new Error('destroy failed'));
+
+    await manager.startSession('employee-1');
+    await handlersToPromise(first.handlers, 'disconnected', 'NAVIGATION');
+    await manager.startSession('employee-1');
+
+    expect(factory.create).toHaveBeenCalledTimes(1);
+    expect(second.client.initialize).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith('WhatsApp session cleanup failed', {
+      employeeId: 'employee-1',
+      error: 'destroy failed'
+    });
   });
 
   it('should reject starting a second runtime session for the same phone number', async () => {
@@ -675,6 +917,9 @@ describe('createSessionManager', () => {
       logger,
       qr: {
         generate: jest.fn()
+      },
+      reconnect: {
+        enabled: false
       }
     });
 
@@ -824,6 +1069,9 @@ describe('createSessionManager', () => {
       logger,
       qr: {
         generate: jest.fn()
+      },
+      reconnect: {
+        enabled: false
       }
     });
 
@@ -877,6 +1125,9 @@ describe('createSessionManager', () => {
       logger,
       qr: {
         generate: jest.fn()
+      },
+      reconnect: {
+        enabled: false
       }
     });
 
@@ -999,6 +1250,191 @@ describe('createSessionManager', () => {
     expect(logger.warn).toHaveBeenCalledWith('WhatsApp session already active', {
       employeeId: 'employee-1'
     });
+  });
+
+  it('should not schedule reconnect or start new clients when shutdown races with disconnect cleanup', async () => {
+    jest.useFakeTimers();
+
+    try {
+      const first = createClient();
+      const second = createClient();
+      const factory: WhatsappClientFactory = {
+        create: jest
+          .fn()
+          .mockReturnValueOnce(first.client)
+          .mockReturnValueOnce(second.client)
+      };
+      const logger = createLogger();
+      const manager = createSessionManager({
+        clientFactory: factory,
+        logger,
+        qr: {
+          generate: jest.fn()
+        },
+        reconnect: {
+          initialDelayMs: 25,
+          maxAttempts: 1,
+          maxDelayMs: 25
+        }
+      });
+
+      await manager.startSession('employee-1');
+
+      // Kick off the disconnect cleanup, then immediately start shutdown
+      // before the enqueued cleanup microtask has a chance to run.
+      const disconnectPromise = first.handlers.get('disconnected')?.('NAVIGATION');
+      const shutdownPromise = manager.shutdown();
+
+      await Promise.all([disconnectPromise, shutdownPromise]);
+
+      // Give any errantly scheduled reconnect timer a chance to fire.
+      await jest.advanceTimersByTimeAsync(100);
+      await flushLifecycleQueue();
+
+      expect(factory.create).toHaveBeenCalledTimes(1);
+      expect(second.client.initialize).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('should destroy pending clients and unblock shutdown when initialize hangs', async () => {
+    const { client } = createClient();
+    const factory: WhatsappClientFactory = {
+      create: jest.fn().mockReturnValue(client)
+    };
+    const logger = createLogger();
+    const manager = createSessionManager({
+      clientFactory: factory,
+      logger,
+      qr: {
+        generate: jest.fn()
+      },
+      reconnect: {
+        enabled: false
+      },
+      shutdownQueueDrainTimeoutMs: 50
+    });
+
+    let rejectInitialize: ((error: Error) => void) | undefined;
+
+    (client.initialize as jest.Mock).mockReturnValueOnce(
+      new Promise<void>((_resolve, reject) => {
+        rejectInitialize = reject;
+      })
+    );
+    (client.destroy as jest.Mock).mockImplementationOnce(async () => {
+      rejectInitialize?.(new Error('destroyed'));
+    });
+
+    const startPromise = manager.startSession('employee-1').catch(() => undefined);
+
+    await flushLifecycleQueue();
+
+    expect(client.initialize).toHaveBeenCalledTimes(1);
+    expect(client.destroy).not.toHaveBeenCalled();
+
+    await expect(manager.shutdown()).resolves.toBeUndefined();
+
+    expect(client.destroy).toHaveBeenCalled();
+
+    await startPromise;
+  });
+
+  it('should bound shutdown by timeout even if destroy does not unblock initialize', async () => {
+    jest.useFakeTimers();
+
+    try {
+      const { client } = createClient();
+      const factory: WhatsappClientFactory = {
+        create: jest.fn().mockReturnValue(client)
+      };
+      const logger = createLogger();
+      const manager = createSessionManager({
+        clientFactory: factory,
+        logger,
+        qr: {
+          generate: jest.fn()
+        },
+        reconnect: {
+          enabled: false
+        },
+        shutdownQueueDrainTimeoutMs: 50
+      });
+
+      (client.initialize as jest.Mock).mockReturnValueOnce(new Promise<void>(() => undefined));
+      (client.destroy as jest.Mock).mockReturnValueOnce(new Promise<void>(() => undefined));
+
+      void manager.startSession('employee-1').catch(() => undefined);
+      await flushLifecycleQueue();
+
+      const shutdownPromise = manager.shutdown();
+      let shutdownResolved = false;
+
+      void shutdownPromise.then(() => {
+        shutdownResolved = true;
+      });
+
+      await jest.advanceTimersByTimeAsync(50);
+      await flushLifecycleQueue();
+
+      expect(shutdownResolved).toBe(true);
+      await expect(shutdownPromise).resolves.toBeUndefined();
+      expect(logger.warn).toHaveBeenCalledWith(
+        'WhatsApp session lifecycle queue did not drain before shutdown timeout',
+        expect.objectContaining({ employeeIds: ['employee-1'] })
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('should reject queued starts waiting for an initialization slot on shutdown', async () => {
+    const first = createClient();
+    const second = createClient();
+    const factory: WhatsappClientFactory = {
+      create: jest
+        .fn()
+        .mockReturnValueOnce(first.client)
+        .mockReturnValueOnce(second.client)
+    };
+    const logger = createLogger();
+    const manager = createSessionManager({
+      clientFactory: factory,
+      logger,
+      maxConcurrentInitializations: 1,
+      qr: {
+        generate: jest.fn()
+      },
+      reconnect: {
+        enabled: false
+      },
+      shutdownQueueDrainTimeoutMs: 100
+    });
+
+    let resolveFirstInitialize: (() => void) | undefined;
+
+    (first.client.initialize as jest.Mock).mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveFirstInitialize = resolve;
+      })
+    );
+    (first.client.destroy as jest.Mock).mockImplementationOnce(async () => {
+      resolveFirstInitialize?.();
+    });
+
+    void manager.startSession('employee-1').catch(() => undefined);
+    const secondStart = manager.startSession('employee-2').catch(() => undefined);
+
+    await flushLifecycleQueue();
+
+    expect(first.client.initialize).toHaveBeenCalledTimes(1);
+    expect(second.client.initialize).not.toHaveBeenCalled();
+
+    await manager.shutdown();
+    await secondStart;
+
+    expect(second.client.initialize).not.toHaveBeenCalled();
   });
 
   it('should keep the session registered when stopSession cleanup fails', async () => {

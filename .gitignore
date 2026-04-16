@@ -9,4 +9,5 @@ coverage
 .DS_Store
 .wwebjs_cache/
 data/
+logs/
 .tmp/

@@ -56,7 +56,19 @@ interface AuthStrategy {
   setup(client: { options: ClientOptions }): void;
 }
 
-const DEFAULT_PUPPETEER_ARGS = ['--no-sandbox', '--disable-setuid-sandbox'];
+const DEFAULT_PUPPETEER_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-extensions',
+  '--disable-background-networking',
+  '--disable-sync',
+  '--disable-default-apps',
+  '--disable-gpu',
+  '--mute-audio',
+  '--no-first-run',
+  '--no-zygote'
+];
 const DEFAULT_SESSION_DIRECTORY = 'sessions';
 const DEFAULT_RM_MAX_RETRIES = 4;
 
@@ -245,6 +257,12 @@ export const createWhatsappClientFactory = ({
         sessionBasePath: sessionDirectoryToCreate
       });
     }
+
+    logger.info('WhatsApp client Puppeteer config resolved', {
+      sessionKey,
+      headless: true,
+      args: DEFAULT_PUPPETEER_ARGS
+    });
 
     return new WhatsappClient({
       authStrategy,
