@@ -127,23 +127,21 @@ The following paths must be persistent:
 
 Minimum requirement:
 
-- `WHATSAPP_DATABASE_PATH` must be an absolute path
-- `WHATSAPP_SESSION_DIR` must be an absolute path
+- the backend process must receive an absolute `WHATSAPP_DATABASE_PATH`
+- the backend process must receive an absolute `WHATSAPP_SESSION_DIR`
+- both resolved paths must point outside the repository checkout
 
-Both paths may reside inside or outside the repo checkout. If kept inside the repo, avoid running `git clean -fd` as it will delete untracked files including database and session artifacts.
+Deployment wrappers may accept relative values from `.env.ci`, but they must
+resolve those values relative to the repo checkout before passing them to the
+backend process. Both resolved paths must reside outside the repo checkout.
+This prevents release cleanup, checkout replacement, or accidental `git clean
+-fd` from deleting the database and WhatsApp session artifacts.
 
-Example inside the repo:
-
-```env
-WHATSAPP_DATABASE_PATH=/opt/whatsapp-monitor/database/whatsapp-monitor.sqlite
-WHATSAPP_SESSION_DIR=/opt/whatsapp-monitor/sessions
-```
-
-Example outside the repo:
+Example `.env.ci` values for a checkout whose parent directory is persistent:
 
 ```env
-WHATSAPP_DATABASE_PATH=/var/lib/whatsapp-monitor/data/whatsapp-monitor.sqlite
-WHATSAPP_SESSION_DIR=/var/lib/whatsapp-monitor/sessions
+WHATSAPP_DATABASE_PATH=../data/whatsapp-monitor.sqlite
+WHATSAPP_SESSION_DIR=../data/sessions
 ```
 
 The deployment flow must not:

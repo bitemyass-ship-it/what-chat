@@ -1394,7 +1394,6 @@ describe('employees controller', () => {
         findByCode: jest.fn(() => undefined),
         listActive: jest.fn(),
         listAll: jest.fn(),
-        seedCodes: jest.fn(),
         upsert: jest.fn()
       },
       logger,
@@ -1517,7 +1516,6 @@ describe('employees controller', () => {
         findByCode: jest.fn(() => undefined),
         listActive: jest.fn(),
         listAll: jest.fn(),
-        seedCodes: jest.fn(),
         upsert: jest.fn()
       },
       logger,
@@ -1575,7 +1573,6 @@ describe('employees controller', () => {
         }),
         listActive: jest.fn(),
         listAll: jest.fn(),
-        seedCodes: jest.fn(),
         upsert: jest.fn()
       },
       logger,

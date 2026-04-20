@@ -133,31 +133,6 @@ describe('employees repository', () => {
     );
   });
 
-  it('should seed missing employee codes without overwriting existing records', () => {
-    database = createDatabase({
-      databasePath: ':memory:',
-      logger: createLogger()
-    });
-
-    database.employees.create({
-      code: 'anna',
-      displayName: 'Team Anna'
-    });
-
-    database.employees.seedCodes(['anna', 'bob']);
-
-    expect(database.employees.listAll()).toEqual([
-      expect.objectContaining({
-        code: 'anna',
-        displayName: 'Team Anna'
-      }),
-      expect.objectContaining({
-        code: 'bob',
-        displayName: null
-      })
-    ]);
-  });
-
   it('should create the database file and parent directory for file-backed storage', () => {
     const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-monitor-db-'));
     const databasePath = path.join(tempDirectory, 'nested', 'app.sqlite');

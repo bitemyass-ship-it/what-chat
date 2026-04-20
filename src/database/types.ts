@@ -32,7 +32,6 @@ export interface EmployeesRepository {
   findByCode(code: string): EmployeeRecord | undefined;
   listActive(): EmployeeRecord[];
   listAll(): EmployeeRecord[];
-  seedCodes(codes: string[]): void;
   upsert(input: UpsertEmployeeInput): EmployeeRecord;
 }
 

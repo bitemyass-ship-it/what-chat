@@ -15,12 +15,19 @@ const requireNonEmptyEnv = (name) => {
 
 const requirePersistentBackendPath = (name) => {
   const value = requireNonEmptyEnv(name);
+  const resolvedPath = path.resolve(repoRoot, value);
+  const relativeToRepo = path.relative(repoRoot, resolvedPath);
 
-  if (!path.isAbsolute(value)) {
-    throw new Error(`${name} must be an absolute path for pm2 production deployment`);
+  if (
+    relativeToRepo === '' ||
+    (!relativeToRepo.startsWith('..') && !path.isAbsolute(relativeToRepo))
+  ) {
+    throw new Error(
+      `${name} must resolve outside the repository checkout for pm2 production deployment`
+    );
   }
 
-  return path.resolve(value);
+  return resolvedPath;
 };
 
 const requireUrlEnv = (name) => {

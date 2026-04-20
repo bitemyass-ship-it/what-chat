@@ -112,12 +112,6 @@ export const createEmployeesRepository = (
       session_dir = excluded.session_dir,
       updated_at = CURRENT_TIMESTAMP
   `);
-  const seedStatement = database.prepare(`
-    INSERT INTO employees (code, is_active)
-    VALUES (?, 1)
-    ON CONFLICT(code) DO NOTHING
-  `);
-
   const findByCode = (code: string): EmployeeRecord | undefined => {
     const row = findByCodeStatement.get(normalizeCode(code));
     return row ? mapEmployeeRow(asEmployeeRow(row)) : undefined;
@@ -160,12 +154,6 @@ export const createEmployeesRepository = (
 
     listAll(): EmployeeRecord[] {
       return listAllStatement.all().map((row) => mapEmployeeRow(asEmployeeRow(row)));
-    },
-
-    seedCodes(codes: string[]): void {
-      for (const code of codes) {
-        seedStatement.run(normalizeCode(code));
-      }
     },
 
     upsert(input: UpsertEmployeeInput): EmployeeRecord {

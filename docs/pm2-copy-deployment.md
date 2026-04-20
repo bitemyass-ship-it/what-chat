@@ -7,9 +7,9 @@ The committed process file is [ecosystem.config.cjs](/Users/yaroslavkravets/Desk
 - `whatsapp-monitor-backend`
 - `whatsapp-monitor-frontend`
 
-`WHATSAPP_CHAT_SYNC_ENABLED=true` is enforced in the backend process config. The remaining production values must be provided by the deploy environment.
+`WHATSAPP_CHAT_SYNC_ENABLED=true` is enforced in the backend process config. `AUTH_PASSWORD`, `WHATSAPP_DATABASE_PATH`, `WHATSAPP_SESSION_DIR`, and `EMPLOYEES_API_BASE_URL` must be provided by the deploy environment.
 
-If `AUTH_PASSWORD`, `WHATSAPP_DATABASE_PATH`, `WHATSAPP_SESSION_DIR`, or `EMPLOYEES_API_BASE_URL` are missing, or if the backend paths are relative or point inside the repo checkout, `pm2 start` and backend bootstrap will fail fast instead of falling back to checkout-local state.
+If `AUTH_PASSWORD`, `WHATSAPP_DATABASE_PATH`, `WHATSAPP_SESSION_DIR`, or `EMPLOYEES_API_BASE_URL` are missing, or if the backend paths resolve inside the repo checkout, `pm2 start` and backend bootstrap will fail fast instead of falling back to checkout-local state.
 
 ## 1. Build
 
@@ -46,34 +46,28 @@ If you built locally, copy the built app as-is, including `dist`, `frontend/.nex
 
 ## 3. Create Persistent Data Dirs
 
-The database and WhatsApp session storage must be on an absolute path. They can live inside the repo checkout or outside — both are supported.
+The database and WhatsApp session storage must resolve to paths outside the repo checkout. Relative paths in `.env.ci` are resolved from the repo checkout.
 
-Example inside the repo:
-
-```bash
-mkdir -p /opt/whatsapp-monitor/database
-mkdir -p /opt/whatsapp-monitor/sessions
-```
-
-Example outside the repo:
+Example:
 
 ```bash
-sudo mkdir -p /var/lib/whatsapp-monitor/data
-sudo mkdir -p /var/lib/whatsapp-monitor/sessions
-sudo chown -R "$USER":"$USER" /var/lib/whatsapp-monitor
+mkdir -p ../data/sessions
 ```
-
-If you keep the data inside the repo checkout, avoid running `git clean -fd` as it will delete untracked files including the database and session artifacts.
 
 ## 4. Set Environment
 
-Create a deploy env file on the server, for example `/opt/whatsapp-monitor/.deploy.env`:
+Create a deploy env file on the server, for example `/opt/whatsapp-monitor/.env.ci`:
 
 ```env
 AUTH_PASSWORD=change-me-now
-WHATSAPP_DATABASE_PATH=/opt/whatsapp-monitor/database/whatsapp-monitor.sqlite
-WHATSAPP_SESSION_DIR=/opt/whatsapp-monitor/sessions
+WHATSAPP_DATABASE_PATH=../data/whatsapp-monitor.sqlite
+WHATSAPP_SESSION_DIR=../data/sessions
 EMPLOYEES_API_BASE_URL=http://127.0.0.1:3050
+
+# WHATSAPP_CHAT_SYNC_INTERVAL_MS=
+# WHATSAPP_CHAT_SYNC_INITIAL_DELAY_MS=
+# WHATSAPP_CHAT_SYNC_EMPLOYEE_CONCURRENCY=
+# WHATSAPP_SESSION_ACTIVITY_SYNC_INTERVAL_MS=
 ```
 
 Load it into the shell before starting or restarting `pm2`:
@@ -81,7 +75,7 @@ Load it into the shell before starting or restarting `pm2`:
 ```bash
 cd /opt/whatsapp-monitor
 set -a
-. ./.deploy.env
+. ./.env.ci
 set +a
 ```
 
@@ -102,7 +96,7 @@ Next deploy after copying a new app version:
 ```bash
 cd /opt/whatsapp-monitor
 set -a
-. ./.deploy.env
+. ./.env.ci
 set +a
 pm2 restart ecosystem.config.cjs --env production --update-env
 ```

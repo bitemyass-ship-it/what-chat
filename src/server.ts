@@ -237,31 +237,6 @@ export const createRuntimeReadinessState = (): RuntimeReadinessState => {
   };
 };
 
-export const parseEmployeeIds = (value: string | undefined): string[] =>
-  (value ?? '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-export const loadEmployeeIds = (
-  database: Database,
-  legacyEmployeeIdsValue: string | undefined,
-  logger: Logger
-): string[] => {
-  if (database.employees.count() === 0) {
-    const legacyEmployeeIds = parseEmployeeIds(legacyEmployeeIdsValue);
-
-    if (legacyEmployeeIds.length > 0) {
-      database.employees.seedCodes(legacyEmployeeIds);
-      logger.info('Seeded employees from legacy environment variable', {
-        employeeIds: legacyEmployeeIds
-      });
-    }
-  }
-
-  return database.employees.listActive().map((employee) => employee.code);
-};
-
 export const startHttpServer = async (
   app: ReturnType<typeof createApp>,
   port: number,
@@ -289,19 +264,6 @@ export const closeHttpServer = async (server: HttpServer): Promise<void> =>
       resolve();
     });
   });
-
-export const startWhatsappSessions = async (
-  employeeIds: string[],
-  sessionManager: SessionManager,
-  logger: Logger
-): Promise<void> => {
-  if (employeeIds.length === 0) {
-    logger.warn('No WhatsApp employee sessions configured');
-    return;
-  }
-
-  await sessionManager.startAll(employeeIds);
-};
 
 const sessionStorageExists = async (
   sessionStoragePath: string
@@ -994,11 +956,6 @@ export const bootstrap = async (): Promise<void> => {
       logger
     });
     readiness.markDatabaseReady();
-    loadEmployeeIds(
-      database,
-      process.env.WHATSAPP_EMPLOYEE_IDS,
-      logger
-    );
     const chatSyncIntervalMs = parsePositiveInteger(
       process.env.WHATSAPP_CHAT_SYNC_INTERVAL_MS,
       DEFAULT_CHAT_SYNC_INTERVAL_MS

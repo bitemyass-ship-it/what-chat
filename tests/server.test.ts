@@ -1,6 +1,5 @@
 import { createDatabase } from '../src/database/database';
 import {
-  loadEmployeeIds,
   restorePersistedSessions,
   reconcileEmployeeActivityFromSessions,
   startChatSyncScheduler
@@ -179,7 +178,6 @@ describe('startChatSyncScheduler', () => {
         create: jest.fn(),
         deleteByCode: jest.fn(),
         findByCode: jest.fn(),
-        seedCodes: jest.fn(),
         upsert: jest.fn()
       } as Database['employees'],
       messages: {} as Database['messages']
@@ -272,7 +270,6 @@ describe('startChatSyncScheduler', () => {
         create: jest.fn(),
         deleteByCode: jest.fn(),
         findByCode: jest.fn(),
-        seedCodes: jest.fn(),
         upsert: jest.fn()
       } as Database['employees'],
       messages: {} as Database['messages']
@@ -298,41 +295,6 @@ describe('startChatSyncScheduler', () => {
         signal: expect.any(AbortSignal)
       })
     );
-  });
-});
-
-describe('loadEmployeeIds', () => {
-  const createLogger = (): Logger => ({
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn()
-  });
-
-  it('should ignore legacy env values after the database is already populated', () => {
-    const logger = createLogger();
-    const database = createDatabase({
-      databasePath: ':memory:',
-      logger
-    });
-
-    try {
-      database.employees.create({ code: 'anna' });
-      database.employees.create({ code: 'bob', isActive: false });
-
-      const employeeIds = loadEmployeeIds(database, 'charlie,david', logger);
-
-      expect(employeeIds).toEqual(['anna']);
-      expect(database.employees.listAll().map((employee) => employee.code)).toEqual([
-        'anna',
-        'bob'
-      ]);
-      expect(logger.info).not.toHaveBeenCalledWith(
-        'Seeded employees from legacy environment variable',
-        expect.anything()
-      );
-    } finally {
-      database.close();
-    }
   });
 });
 

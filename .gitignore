@@ -2,9 +2,12 @@ node_modules
 dist
 sessions
 coverage
+logs/
 .next
 .env*
+.env.ci
 !.env.example
+!.env.ci.example
 !frontend/.env.example
 .DS_Store
 .wwebjs_cache/

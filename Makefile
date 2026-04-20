@@ -23,8 +23,8 @@ help:
 	@printf "  make build-frontend  Build frontend Next.js app\n"
 	@printf "  make start           Run backend production build\n"
 	@printf "  make test            Run backend test suite\n"
-	@printf "  make ci-build        Install deps, build backend and frontend, create .deploy.env template\n"
-	@printf "  make ci-run          Start or restart the app via pm2 using .deploy.env\n"
+	@printf "  make ci-build        Install deps, build backend and frontend, create .env.ci template\n"
+	@printf "  make ci-run          Start or restart the app via pm2 using .env.ci\n"
 	@printf "  make ci-stop         Stop both pm2 processes\n"
 
 node_modules: package.json package-lock.json
@@ -88,25 +88,27 @@ start: node_modules
 test: node_modules
 	npm test
 
-DEPLOY_ENV_FILE := .deploy.env
-DB_FILE := database/whatsapp-monitor.sqlite
+DEPLOY_ENV_FILE := .env.ci
 
 ci-build:
 	npm ci
 	npm --prefix frontend ci
 	npm run build
 	npm run frontend:build
-	@mkdir -p database
-	@if [ ! -f $(DB_FILE) ]; then \
-		touch $(DB_FILE); \
-		printf "Created %s\n" "$(DB_FILE)"; \
-	else \
-		printf "%s already exists, skipping\n" "$(DB_FILE)"; \
-	fi
 	@if [ -f $(DEPLOY_ENV_FILE) ]; then \
 		printf "%s already exists, skipping\n" "$(DEPLOY_ENV_FILE)"; \
 	else \
-		printf "AUTH_PASSWORD=\nWHATSAPP_DATABASE_PATH=\nWHATSAPP_SESSION_DIR=\nEMPLOYEES_API_BASE_URL=\n" > $(DEPLOY_ENV_FILE); \
+		printf "%s\n" \
+			"AUTH_PASSWORD=" \
+			"WHATSAPP_DATABASE_PATH=../data/whatsapp-monitor.sqlite" \
+			"WHATSAPP_SESSION_DIR=../data/sessions" \
+			"EMPLOYEES_API_BASE_URL=http://127.0.0.1:3050" \
+			"" \
+			"# WHATSAPP_CHAT_SYNC_INTERVAL_MS=" \
+			"# WHATSAPP_CHAT_SYNC_INITIAL_DELAY_MS=" \
+			"# WHATSAPP_CHAT_SYNC_EMPLOYEE_CONCURRENCY=" \
+			"# WHATSAPP_SESSION_ACTIVITY_SYNC_INTERVAL_MS=" \
+			> $(DEPLOY_ENV_FILE); \
 		printf "Created %s — fill in the remaining values before starting pm2\n" "$(DEPLOY_ENV_FILE)"; \
 	fi
 
@@ -120,9 +122,13 @@ ci-run:
 		exit 1; \
 	fi
 	set -a && . ./$(DEPLOY_ENV_FILE) && set +a && \
-	if pm2 id whatsapp-monitor-backend | grep -q '[0-9]'; then \
+	PM2_BACKEND_ID=$$(pm2 id whatsapp-monitor-backend 2>/dev/null || true); \
+	case "$$PM2_BACKEND_ID" in \
+		*[0-9]*) \
 		pm2 restart ecosystem.config.cjs --env production --update-env; \
-	else \
+		;; \
+		*) \
 		pm2 start ecosystem.config.cjs --env production; \
 		pm2 save; \
-	fi
+		;; \
+	esac

@@ -31,9 +31,9 @@ npm install
   Необязательная переменная. Путь к SQLite-файлу.  
   Если не указать, будет использоваться `<project-root>/data/whatsapp-monitor.sqlite`.
 
-- `WHATSAPP_EMPLOYEE_IDS`  
-  Необязательная legacy-переменная. Если таблица `employees` ещё пустая, значения из неё один раз сидируются в базу.  
-  Пример: `anna,bob,alex`
+- `AUTH_PASSWORD`
+  Обязательная переменная. Общий пароль для защищенных backend routes.
+  Его нужно передавать в заголовке `X-User-Password`.
 
 - `WHATSAPP_SESSION_DIR`  
   Необязательная переменная. Путь к директории, где хранятся WhatsApp-сессии.  
@@ -52,7 +52,7 @@ npm run dev
 ```
 
 В проекте уже подготовлен локальный [.env](/Users/yaroslavkravets/Desktop/LastChance/WhatsApp%20Monitor/.env), поэтому для первого запуска достаточно одной команды.  
-По умолчанию сервис стартует на `3050` порту и поднимает одну WhatsApp-сессию с `employeeId=anna`.
+По умолчанию сервис стартует на `3050` порту. Сотрудники не создаются из переменных окружения: их нужно добавить через UI или backend API.
 
 Если нужно поменять конфиг для разработки, редактируйте:
 
@@ -64,7 +64,7 @@ npm run dev
 ```env
 PORT=3050
 WHATSAPP_DATABASE_PATH=data/whatsapp-monitor.sqlite
-WHATSAPP_EMPLOYEE_IDS=anna
+AUTH_PASSWORD=0000
 WHATSAPP_SESSION_DIR=sessions
 ```
 
@@ -72,13 +72,13 @@ WHATSAPP_SESSION_DIR=sessions
 
 ```bash
 npm run build
-WHATSAPP_EMPLOYEE_IDS=anna,bob npm start
+npm start
 ```
 
 ## Как залогиниться в WhatsApp
 
 1. Запустите сервис.
-2. В терминале появится QR-код для каждого `employeeId`.
+2. В терминале появится QR-код для активируемого сотрудника.
 3. На телефоне откройте WhatsApp.
 4. Перейдите в `Linked Devices` / `Связанные устройства`.
 5. Нажмите `Link a Device` / `Привязать устройство`.
@@ -158,23 +158,38 @@ npm run frontend:build
 
 ## Как работают несколько сотрудников
 
-Сотрудники хранятся в таблице `employees` в SQLite. При первом запуске можно использовать `WHATSAPP_EMPLOYEE_IDS`, чтобы автоматически засидировать базу, а дальше сервис будет читать активных сотрудников уже из БД.
+Сотрудники хранятся в таблице `employees` в SQLite и управляются через frontend или backend API. Переменные окружения не используются для создания или восстановления сотрудников.
 
-Для каждого активного сотрудника создается отдельная WhatsApp-сессия с уникальным `clientId`.
+Новый сотрудник создается неактивным. После создания задайте номер телефона, затем активируйте WhatsApp-сессию через UI или API:
 
-Пример:
+```bash
+curl -X POST http://localhost:3050/employees \
+  -H 'Content-Type: application/json' \
+  -H 'X-User-Password: 0000' \
+  -d '{"displayName":"Anna"}'
+```
+
+```bash
+curl -X PATCH http://localhost:3050/employees/anna \
+  -H 'Content-Type: application/json' \
+  -H 'X-User-Password: 0000' \
+  -d '{"phoneNumber":"380991112233"}'
+```
+
+```bash
+curl -X POST http://localhost:3050/employees/anna/whatsapp-session \
+  -H 'X-User-Password: 0000'
+```
+
+Для каждого сотрудника используется отдельная WhatsApp-сессия с уникальным `clientId`. При рестарте runtime-сессии восстанавливаются только из SQLite `employees` и сохраненной session storage директории.
+
+Пример обычного запуска:
 
 ```bash
 npm run dev
 ```
 
-И соответствующий `.env` для первого запуска:
-
-```env
-WHATSAPP_EMPLOYEE_IDS=anna,bob,manager
-```
-
-Это создаст 3 независимые сессии:
+Если в SQLite уже есть активные сотрудники `anna`, `bob` и `manager`, а их session storage сохранен на диске, сервис восстановит 3 независимые сессии:
 
 - `anna`
 - `bob`

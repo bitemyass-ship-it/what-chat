@@ -103,6 +103,21 @@ export const requirePersistentProductionPath = ({
   }
 
   const normalizedPath = path.resolve(trimmedPath);
+  const normalizedProjectRoot = path.resolve(projectRoot);
+  const pathRelativeToProjectRoot = path.relative(
+    normalizedProjectRoot,
+    normalizedPath
+  );
+
+  if (
+    pathRelativeToProjectRoot === '' ||
+    (!pathRelativeToProjectRoot.startsWith('..') &&
+      !path.isAbsolute(pathRelativeToProjectRoot))
+  ) {
+    throw new Error(
+      `${variableName} must point outside the repository checkout for first-mode production`
+    );
+  }
 
   return normalizedPath;
 };

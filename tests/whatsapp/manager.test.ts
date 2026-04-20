@@ -56,7 +56,6 @@ describe('createSessionManager', () => {
     }),
     listActive: jest.fn(() => []),
     listAll: jest.fn(() => []),
-    seedCodes: jest.fn(),
     upsert: jest.fn()
   });
 
