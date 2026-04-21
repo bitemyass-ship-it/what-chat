@@ -5,8 +5,15 @@ import type {
   MessagesRepository
 } from './database/types';
 import { createAuthMiddleware } from './middleware/auth';
+import { resolveDatabasePath } from './database/database';
+import {
+  createReportExportService,
+  type ReportExportService
+} from './reports/report-export-service';
+import { resolveReportsDir } from './reports/report-paths';
 import { createAuthRouter } from './routes/auth';
 import { createEmployeesRouter } from './routes/employees';
+import { createReportsRouter } from './routes/reports';
 import type { Logger, SessionManager } from './types/whatsapp';
 
 export interface AppReadinessStatus {
@@ -27,10 +34,13 @@ export interface AppReadinessReporter {
 interface CreateAppOptions {
   authPassword: string;
   chats: ChatsRepository;
+  databasePath?: string;
   employees: EmployeesRepository;
   logger: Logger;
   messages: MessagesRepository;
   readiness?: AppReadinessReporter;
+  reportExportService?: ReportExportService;
+  reportsDir?: string;
   sessionManager: SessionManager;
 }
 
@@ -56,10 +66,13 @@ const isReadyForFirstMode = (status: AppReadinessStatus): boolean =>
 export const createApp = ({
   authPassword,
   chats,
+  databasePath,
   employees,
   logger,
   messages,
   readiness,
+  reportExportService,
+  reportsDir,
   sessionManager
 }: CreateAppOptions): Express => {
   const app = express();
@@ -67,6 +80,15 @@ export const createApp = ({
     configuredPassword: authPassword,
     logger
   });
+  const resolvedDatabasePath = databasePath ?? resolveDatabasePath();
+  const resolvedReportsDir = resolveReportsDir({
+    reportsDir
+  });
+  const exportService =
+    reportExportService ??
+    createReportExportService({
+      logger
+    });
   const handleJsonParseError: ErrorRequestHandler = (error, _request, response, next) => {
     if (
       error instanceof SyntaxError &&
@@ -100,6 +122,14 @@ export const createApp = ({
   });
   app.use(createAuthRouter({
     authMiddleware
+  }));
+  app.use('/reports', authMiddleware);
+  app.use(createReportsRouter({
+    databasePath: resolvedDatabasePath,
+    employees,
+    exportService,
+    logger,
+    reportsDir: resolvedReportsDir
   }));
   app.use('/employees', authMiddleware);
   app.use(express.json());

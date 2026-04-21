@@ -3,6 +3,7 @@ dist
 sessions
 coverage
 logs/
+/reports/
 .next
 .env*
 .env.ci
@@ -13,3 +14,4 @@ logs/
 .wwebjs_cache/
 data/
 .tmp/
+*.tsbuildinfo

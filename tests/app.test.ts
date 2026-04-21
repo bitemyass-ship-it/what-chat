@@ -1,10 +1,17 @@
 import type { Express } from 'express';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import { PassThrough, Writable } from 'node:stream';
 import { createApp } from '../src/app';
 import { createDatabase } from '../src/database/database';
 import type { Database } from '../src/database/types';
 import { AUTH_PASSWORD_HEADER } from '../src/middleware/auth';
+import {
+  createReportExportService,
+  type ReportExportChildProcess,
+  type ReportExportService,
+  type SpawnReportExportWorker
+} from '../src/reports/report-export-service';
 import type {
   Logger,
   SessionHealth,
@@ -33,6 +40,15 @@ const AUTH_PASSWORD = 'super-secret-password';
 const AUTH_HEADERS = {
   [AUTH_PASSWORD_HEADER]: AUTH_PASSWORD
 };
+const formatReportPeriod = (date: Date): string =>
+  `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}`;
+const createReportPeriodDate = (monthOffset: number): Date => {
+  const now = new Date();
+
+  return new Date(now.getFullYear(), now.getMonth() + monthOffset, 1, 0, 0, 0, 0);
+};
+const CURRENT_REPORT_PERIOD = formatReportPeriod(createReportPeriodDate(0));
+const NEXT_REPORT_PERIOD = formatReportPeriod(createReportPeriodDate(1));
 
 const createLogger = (): Logger => ({
   info: jest.fn(),
@@ -70,6 +86,25 @@ const createMockSessionManager = (): SessionManager => ({
   startSession: jest.fn().mockResolvedValue(undefined),
   stopSession: jest.fn().mockResolvedValue(undefined)
 });
+
+const createMockReportExportService = (): ReportExportService => ({
+  startExport: jest.fn(() => ({
+    alreadyRunning: false,
+    status: 'accepted'
+  }))
+});
+
+const createMockReportExportChildProcess = (): ReportExportChildProcess => {
+  const child = new EventEmitter() as EventEmitter & {
+    pid?: number;
+    unref: jest.Mock;
+  };
+
+  child.pid = 123;
+  child.unref = jest.fn();
+
+  return child as ReportExportChildProcess;
+};
 
 const createWhatsappClient = (): WhatsappSessionClient => ({
   destroy: jest.fn().mockResolvedValue(undefined),
@@ -432,6 +467,289 @@ describe('app wiring', () => {
       total: 0,
       totalPages: 1
     });
+  });
+
+  it('should reject report export when the auth header is missing without starting export', async () => {
+    const reportExportService = createMockReportExportService();
+    const reportApp = createApp({
+      authPassword: AUTH_PASSWORD,
+      chats: database?.chats as Database['chats'],
+      databasePath: ':memory:',
+      employees: database?.employees as Database['employees'],
+      logger: logger as Logger,
+      messages: database?.messages as Database['messages'],
+      reportExportService,
+      reportsDir: '/tmp/reports',
+      sessionManager: sessionManager as SessionManager
+    });
+
+    const response = await performRequest(reportApp, {
+      method: 'POST',
+      path: `/reports/anna/${NEXT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(401);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'Unauthorized'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should reject report export when the auth header is invalid without starting export', async () => {
+    const reportExportService = createMockReportExportService();
+    const reportApp = createApp({
+      authPassword: AUTH_PASSWORD,
+      chats: database?.chats as Database['chats'],
+      databasePath: ':memory:',
+      employees: database?.employees as Database['employees'],
+      logger: logger as Logger,
+      messages: database?.messages as Database['messages'],
+      reportExportService,
+      reportsDir: '/tmp/reports',
+      sessionManager: sessionManager as SessionManager
+    });
+
+    const response = await performRequest(reportApp, {
+      headers: {
+        [AUTH_PASSWORD_HEADER]: 'wrong-password'
+      },
+      method: 'POST',
+      path: `/reports/anna/${NEXT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(401);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'Unauthorized'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should accept a valid report export POST and start the child export service', async () => {
+    const reportExportService = createMockReportExportService();
+    const reportApp = createApp({
+      authPassword: AUTH_PASSWORD,
+      chats: database?.chats as Database['chats'],
+      databasePath: '/tmp/what-chat.sqlite',
+      employees: database?.employees as Database['employees'],
+      logger: logger as Logger,
+      messages: database?.messages as Database['messages'],
+      reportExportService,
+      reportsDir: '/tmp/reports',
+      sessionManager: sessionManager as SessionManager
+    });
+
+    database?.employees.create({
+      code: 'anna',
+      displayName: 'Anna'
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'POST',
+      path: `/reports/anna/${CURRENT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(202);
+    expect(JSON.parse(response.body)).toEqual({
+      status: 'accepted'
+    });
+    expect(reportExportService.startExport).toHaveBeenCalledWith({
+      databasePath: '/tmp/what-chat.sqlite',
+      employeeCode: 'anna',
+      period: CURRENT_REPORT_PERIOD,
+      reportsDir: '/tmp/reports',
+      targetFilePath: `/tmp/reports/employees/anna/anna-${CURRENT_REPORT_PERIOD}.csv`
+    });
+  });
+
+  it('should return 404 for report export when the employee does not exist', async () => {
+    const reportExportService = createMockReportExportService();
+    const reportApp = createApp({
+      authPassword: AUTH_PASSWORD,
+      chats: database?.chats as Database['chats'],
+      databasePath: ':memory:',
+      employees: database?.employees as Database['employees'],
+      logger: logger as Logger,
+      messages: database?.messages as Database['messages'],
+      reportExportService,
+      reportsDir: '/tmp/reports',
+      sessionManager: sessionManager as SessionManager
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'POST',
+      path: `/reports/anna/${CURRENT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(404);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'Employee not found: anna'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 for invalid report export period', async () => {
+    const reportExportService = createMockReportExportService();
+    const reportApp = createApp({
+      authPassword: AUTH_PASSWORD,
+      chats: database?.chats as Database['chats'],
+      databasePath: ':memory:',
+      employees: database?.employees as Database['employees'],
+      logger: logger as Logger,
+      messages: database?.messages as Database['messages'],
+      reportExportService,
+      reportsDir: '/tmp/reports',
+      sessionManager: sessionManager as SessionManager
+    });
+
+    database?.employees.create({
+      code: 'anna'
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'POST',
+      path: '/reports/anna/202613'
+    });
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'period route parameter must use YYYYMM format'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 for future report export period', async () => {
+    const reportExportService = createMockReportExportService();
+    const reportApp = createApp({
+      authPassword: AUTH_PASSWORD,
+      chats: database?.chats as Database['chats'],
+      databasePath: ':memory:',
+      employees: database?.employees as Database['employees'],
+      logger: logger as Logger,
+      messages: database?.messages as Database['messages'],
+      reportExportService,
+      reportsDir: '/tmp/reports',
+      sessionManager: sessionManager as SessionManager
+    });
+
+    database?.employees.create({
+      code: 'anna'
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'POST',
+      path: `/reports/anna/${NEXT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'period must not be in the future'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 for empty report export employee code', async () => {
+    const reportExportService = createMockReportExportService();
+    const reportApp = createApp({
+      authPassword: AUTH_PASSWORD,
+      chats: database?.chats as Database['chats'],
+      databasePath: ':memory:',
+      employees: database?.employees as Database['employees'],
+      logger: logger as Logger,
+      messages: database?.messages as Database['messages'],
+      reportExportService,
+      reportsDir: '/tmp/reports',
+      sessionManager: sessionManager as SessionManager
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'POST',
+      path: `/reports/%20/${CURRENT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'employeeCode route parameter is required'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should return 500 when report export child process cannot be started', async () => {
+    const reportExportService = createMockReportExportService();
+
+    (reportExportService.startExport as jest.Mock).mockImplementationOnce(() => {
+      throw new Error('spawn failed');
+    });
+
+    const reportApp = createApp({
+      authPassword: AUTH_PASSWORD,
+      chats: database?.chats as Database['chats'],
+      databasePath: ':memory:',
+      employees: database?.employees as Database['employees'],
+      logger: logger as Logger,
+      messages: database?.messages as Database['messages'],
+      reportExportService,
+      reportsDir: '/tmp/reports',
+      sessionManager: sessionManager as SessionManager
+    });
+
+    database?.employees.create({
+      code: 'anna'
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'POST',
+      path: `/reports/anna/${CURRENT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(500);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'Failed to start report export'
+    });
+  });
+
+  it('should keep duplicate in-flight report exports idempotent', async () => {
+    const spawnWorker = jest.fn(
+      (_input: Parameters<SpawnReportExportWorker>[0]) =>
+        createMockReportExportChildProcess()
+    );
+    const reportExportService = createReportExportService({
+      logger: logger as Logger,
+      spawnWorker
+    });
+    const reportApp = createApp({
+      authPassword: AUTH_PASSWORD,
+      chats: database?.chats as Database['chats'],
+      databasePath: '/tmp/what-chat.sqlite',
+      employees: database?.employees as Database['employees'],
+      logger: logger as Logger,
+      messages: database?.messages as Database['messages'],
+      reportExportService,
+      reportsDir: '/tmp/reports',
+      sessionManager: sessionManager as SessionManager
+    });
+
+    database?.employees.create({
+      code: 'anna'
+    });
+
+    const firstResponse = await performProtectedRequest(reportApp, {
+      method: 'POST',
+      path: `/reports/anna/${CURRENT_REPORT_PERIOD}`
+    });
+    const secondResponse = await performProtectedRequest(reportApp, {
+      method: 'POST',
+      path: `/reports/anna/${CURRENT_REPORT_PERIOD}`
+    });
+
+    expect(firstResponse.status).toBe(202);
+    expect(secondResponse.status).toBe(202);
+    expect(JSON.parse(firstResponse.body)).toEqual({
+      status: 'accepted'
+    });
+    expect(JSON.parse(secondResponse.body)).toEqual({
+      status: 'accepted'
+    });
+    expect(spawnWorker).toHaveBeenCalledTimes(1);
   });
 
   it('should mount the employee chat messages route on the protected app', async () => {

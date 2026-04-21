@@ -22,6 +22,7 @@ import {
 import EmployeeChatsPlaceholder from './EmployeeChatsPlaceholder';
 import EmployeeHeader from './EmployeeHeader';
 import EmployeeInfoForm from './EmployeeInfoForm';
+import EmployeeReportExport from './EmployeeReportExport';
 import EmployeeTabs, { type EmployeeTabId } from './EmployeeTabs';
 import EmployeeWhatsappSessionModal from './EmployeeWhatsappSessionModal';
 
@@ -575,24 +576,27 @@ export default function EmployeeEditor({ initialEmployee }: EmployeeEditorProps)
       <EmployeeHeader employee={employee} isActive={employee.isActive} />
       <EmployeeTabs activeTab={activeTab} onTabChange={handleTabChange} />
       {activeTab === 'info' ? (
-        <EmployeeInfoForm
-          displayName={displayName}
-          employee={employee}
-          error={error}
-          hasPersistedPhoneNumber={hasPersistedPhoneNumber}
-          hasChanges={hasChanges}
-          isSaving={isSaving}
-          isSessionStarting={isSessionStarting}
-          isStatusUpdating={isStatusUpdating}
-          onDisplayNameChange={setDisplayName}
-          onPhoneNumberChange={setPhoneNumber}
-          onStatusToggle={handleToggleEmployeeStatus}
-          onSubmit={handleSubmit}
-          phoneNumber={phoneNumber}
-          sessionControlMode={sessionControlMode}
-          statusError={statusError}
-          success={success}
-        />
+        <>
+          <EmployeeInfoForm
+            displayName={displayName}
+            employee={employee}
+            error={error}
+            hasPersistedPhoneNumber={hasPersistedPhoneNumber}
+            hasChanges={hasChanges}
+            isSaving={isSaving}
+            isSessionStarting={isSessionStarting}
+            isStatusUpdating={isStatusUpdating}
+            onDisplayNameChange={setDisplayName}
+            onPhoneNumberChange={setPhoneNumber}
+            onStatusToggle={handleToggleEmployeeStatus}
+            onSubmit={handleSubmit}
+            phoneNumber={phoneNumber}
+            sessionControlMode={sessionControlMode}
+            statusError={statusError}
+            success={success}
+          />
+          <EmployeeReportExport employeeCode={employee.code} />
+        </>
       ) : (
         <EmployeeChatsPlaceholder
           employeeCode={employee.code}
