@@ -117,23 +117,69 @@ describe('createSessionManager', () => {
       logger
     });
     const { client } = createClient();
+    const directFetchMessages = jest.fn().mockResolvedValue([
+      {
+        body: 'Hello from poll',
+        from: '123@c.us',
+        id: {
+          _serialized: 'wamid.poll.1'
+        },
+        timestamp: 1712345678,
+        type: 'chat'
+      },
+      {
+        body: 'System noise',
+        from: '123@c.us',
+        id: {
+          _serialized: 'wamid.poll.system'
+        },
+        timestamp: 1712345680,
+        type: 'notification_template'
+      }
+    ]);
+    const groupFetchMessages = jest.fn().mockResolvedValue([
+      {
+        body: 'Group poll noise',
+        from: '120363000000000000@g.us',
+        id: {
+          _serialized: 'wamid.poll.group'
+        },
+        type: 'chat'
+      }
+    ]);
+    const newsletterFetchMessages = jest.fn().mockResolvedValue([
+      {
+        body: 'Newsletter poll noise',
+        from: '123@newsletter',
+        id: {
+          _serialized: 'wamid.poll.newsletter'
+        },
+        type: 'chat'
+      }
+    ]);
     client.getChats = jest.fn().mockResolvedValue([
       {
+        fetchMessages: groupFetchMessages,
+        id: {
+          _serialized: '120363000000000000@g.us'
+        },
+        isGroup: true,
+        name: 'Group'
+      },
+      {
+        fetchMessages: newsletterFetchMessages,
+        id: {
+          _serialized: '123@newsletter'
+        },
+        name: 'Newsletter'
+      },
+      {
+        fetchMessages: directFetchMessages,
         id: {
           _serialized: '123@c.us'
         },
         name: 'Alice',
-        unreadCount: 2,
-        fetchMessages: jest.fn().mockResolvedValue([
-          {
-            body: 'Hello from poll',
-            from: '123@c.us',
-            id: {
-              _serialized: 'wamid.poll.1'
-            },
-            timestamp: 1712345678
-          }
-        ])
+        unreadCount: 2
       }
     ]);
     const factory: WhatsappClientFactory = {
@@ -171,6 +217,12 @@ describe('createSessionManager', () => {
       expect(manager.syncChats).toBeDefined();
       await manager.syncChats?.('anna');
 
+      expect(groupFetchMessages).not.toHaveBeenCalled();
+      expect(newsletterFetchMessages).not.toHaveBeenCalled();
+      expect(directFetchMessages).toHaveBeenCalledWith({
+        limit: 50
+      });
+
       const [chat] = database.chats.listByEmployeeCode('anna');
 
       expect(chat).toEqual(
@@ -191,6 +243,7 @@ describe('createSessionManager', () => {
           body: 'Hello from poll',
           externalMessageId: 'wamid.poll.1',
           ingestSource: 'poll',
+          messageType: 'chat',
           sourceChatId: '123@c.us'
         })
       ]);
@@ -517,6 +570,41 @@ describe('createSessionManager', () => {
     );
   });
 
+  it('should ignore group call events without warning about missing stable call id', async () => {
+    const { client, handlers } = createClient();
+    const factory: WhatsappClientFactory = {
+      create: jest.fn(() => client)
+    };
+    const logger = createLogger();
+    const callHandler = {
+      handle: jest.fn()
+    };
+    const manager = createSessionManager({
+      callHandler,
+      clientFactory: factory,
+      logger,
+      qr: {
+        generate: jest.fn()
+      }
+    } as never);
+
+    await manager.startSession('employee-1');
+
+    await handlers.get('call')?.({
+      from: '123@c.us',
+      isGroup: true,
+      isVideo: false,
+      outgoing: false,
+      peerJid: '120363000000000000@g.us'
+    });
+
+    expect(callHandler.handle).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      'WhatsApp call skipped persistence: missing stable call id',
+      expect.anything()
+    );
+  });
+
   it('should route call_log messages through the call handler instead of the message handler', async () => {
     const { client, handlers } = createClient();
     const factory: WhatsappClientFactory = {
@@ -558,6 +646,45 @@ describe('createSessionManager', () => {
         status: 'incoming'
       })
     );
+    expect(messageHandler.handle).not.toHaveBeenCalled();
+  });
+
+  it('should ignore group call_log messages before call normalization', async () => {
+    const { client, handlers } = createClient();
+    const factory: WhatsappClientFactory = {
+      create: jest.fn(() => client)
+    };
+    const logger = createLogger();
+    const callHandler = {
+      handle: jest.fn()
+    };
+    const messageHandler = {
+      handle: jest.fn()
+    };
+    const manager = createSessionManager({
+      callHandler,
+      clientFactory: factory,
+      logger,
+      messageHandler,
+      qr: {
+        generate: jest.fn()
+      }
+    } as never);
+
+    await manager.startSession('employee-1');
+
+    await handlers.get('message')?.({
+      author: '123@c.us',
+      from: '120363000000000000@g.us',
+      id: {
+        _serialized: 'wamid-group-call-log-1',
+        remote: '120363000000000000@g.us'
+      },
+      timestamp: 1712345678,
+      type: 'call_log'
+    });
+
+    expect(callHandler.handle).not.toHaveBeenCalled();
     expect(messageHandler.handle).not.toHaveBeenCalled();
   });
 
@@ -727,6 +854,182 @@ describe('createSessionManager', () => {
     );
   });
 
+  it('should ignore incoming group messages before handler and contact resolution', async () => {
+    const { client, handlers } = createClient();
+    const factory: WhatsappClientFactory = {
+      create: jest.fn(() => client)
+    };
+    const logger = createLogger();
+    const messageHandler = {
+      handle: jest.fn()
+    };
+    const manager = createSessionManager({
+      clientFactory: factory,
+      logger,
+      messageHandler,
+      qr: {
+        generate: jest.fn()
+      }
+    } as never);
+
+    await manager.startSession('employee-1');
+
+    await handlers.get('message')?.({
+      author: '123@c.us',
+      body: 'hello group',
+      from: '120363000000000000@g.us',
+      fromMe: false,
+      id: {
+        _serialized: 'wamid-group-1',
+        remote: '120363000000000000@g.us'
+      },
+      type: 'chat'
+    });
+
+    expect(messageHandler.handle).not.toHaveBeenCalled();
+    expect(client.getContactLidAndPhone).not.toHaveBeenCalled();
+  });
+
+  it('should ignore direct system notifications before the message handler', async () => {
+    const { client, handlers } = createClient();
+    const factory: WhatsappClientFactory = {
+      create: jest.fn(() => client)
+    };
+    const logger = createLogger();
+    const messageHandler = {
+      handle: jest.fn()
+    };
+    const manager = createSessionManager({
+      clientFactory: factory,
+      logger,
+      messageHandler,
+      qr: {
+        generate: jest.fn()
+      }
+    } as never);
+
+    await manager.startSession('employee-1');
+
+    await handlers.get('message')?.({
+      from: '123@c.us',
+      fromMe: false,
+      id: {
+        _serialized: 'wamid-system-1',
+        remote: '123@c.us'
+      },
+      type: 'notification_template'
+    });
+
+    expect(messageHandler.handle).not.toHaveBeenCalled();
+  });
+
+  it('should persist only target live events through the default handlers', async () => {
+    const logger = createLogger();
+    const database = createDatabase({
+      databasePath: ':memory:',
+      logger
+    });
+    const { client, handlers } = createClient();
+    const factory: WhatsappClientFactory = {
+      create: jest.fn(() => client)
+    };
+
+    try {
+      database.employees.create({
+        code: 'anna',
+        isActive: true,
+        phoneNumber: '380991112233'
+      });
+
+      const manager = createSessionManager({
+        callHandler: createCallHandler({
+          chats: database.chats,
+          logger,
+          messages: database.messages
+        }),
+        clientFactory: factory,
+        logger,
+        messageHandler: createMessageHandler({
+          chats: database.chats,
+          logger,
+          messages: database.messages
+        }),
+        qr: {
+          generate: jest.fn()
+        }
+      });
+
+      await manager.startSession('anna');
+
+      await handlers.get('message')?.({
+        author: '123@c.us',
+        body: 'group should not persist',
+        from: '120363000000000000@g.us',
+        fromMe: false,
+        id: {
+          _serialized: 'wamid-live-group',
+          remote: '120363000000000000@g.us'
+        },
+        type: 'chat'
+      });
+      await handlers.get('call')?.({
+        id: 'group-call-1',
+        isGroup: true,
+        peerJid: '120363000000000000@g.us'
+      });
+
+      expect(database.chats.countByEmployeeCode('anna')).toBe(0);
+      expect(
+        database.messages.findByEmployeeCodeAndExternalMessageId(
+          'anna',
+          'wamid-live-group'
+        )
+      ).toBeUndefined();
+      expect(
+        database.messages.findByEmployeeCodeAndExternalMessageId(
+          'anna',
+          'call:group-call-1'
+        )
+      ).toBeUndefined();
+
+      await handlers.get('message')?.({
+        body: 'direct should persist',
+        from: '123@c.us',
+        fromMe: false,
+        id: {
+          _serialized: 'wamid-live-direct',
+          remote: '123@c.us'
+        },
+        timestamp: 1712345678,
+        type: 'chat'
+      });
+
+      const [chat] = database.chats.listByEmployeeCode('anna');
+
+      expect(chat).toEqual(
+        expect.objectContaining({
+          chatId: '123@c.us',
+          lastMessageId: 'wamid-live-direct',
+          lastMessagePreview: 'direct should persist'
+        })
+      );
+      expect(
+        database.messages.findByEmployeeCodeAndExternalMessageId(
+          'anna',
+          'wamid-live-direct'
+        )
+      ).toEqual(
+        expect.objectContaining({
+          body: 'direct should persist',
+          messageType: 'chat',
+          sourceChatId: '123@c.us'
+        })
+      );
+    } finally {
+      database.close();
+    }
+  });
+
   it('should emit/log outgoing messages correctly', async () => {
     const { client, handlers } = createClient();
     const factory: WhatsappClientFactory = {
@@ -776,6 +1079,38 @@ describe('createSessionManager', () => {
         rawPayload: payload
       })
     );
+  });
+
+  it('should ignore outgoing group message_create events before contact resolution', async () => {
+    const { client, handlers } = createClient();
+    const factory: WhatsappClientFactory = {
+      create: jest.fn(() => client)
+    };
+    const logger = createLogger();
+    const messageHandler = {
+      handle: jest.fn()
+    };
+    const manager = createSessionManager({
+      clientFactory: factory,
+      logger,
+      messageHandler,
+      qr: {
+        generate: jest.fn()
+      }
+    } as never);
+
+    await manager.startSession('employee-1');
+
+    await handlers.get('message_create')?.({
+      body: 'reply to group',
+      from: 'employee@c.us',
+      fromMe: true,
+      to: '120363000000000000@g.us',
+      type: 'chat'
+    });
+
+    expect(messageHandler.handle).not.toHaveBeenCalled();
+    expect(client.getContactLidAndPhone).not.toHaveBeenCalled();
   });
 
   it('should ignore non-outgoing message_create events to avoid duplicate logs', async () => {

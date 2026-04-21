@@ -17,6 +17,12 @@ import {
   resolveReliablePhoneNumber
 } from '../utils/chat-identity';
 import { createCallHandler } from './call-handler';
+import {
+  resolveMessageRemoteChatId,
+  shouldIngestCallEvent,
+  shouldIngestMessageEvent,
+  shouldPollRuntimeChat
+} from './ingest-filter';
 import { createMessageHandler } from './message-handler';
 import { resolveEmployeeSessionLocation } from './session-location';
 
@@ -45,8 +51,6 @@ const extractPhoneNumberFromChatId = (chatId: string): string | undefined => {
 
   return match[1];
 };
-
-const resolveChatId = (message: MessagePayload): string => (message.fromMe ? message.to ?? message.from : message.from);
 
 const readString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value : undefined;
@@ -337,13 +341,14 @@ const resolveCallIsVideo = (payload: Record<string, unknown>): boolean | undefin
 
 const normalizeIncomingCallPayload = async (
   call: unknown,
-  client: WhatsappSessionClient
+  client: WhatsappSessionClient,
+  resolvedChatId?: string
 ): Promise<CallPayload | undefined> => {
   const rawCall = call as Record<string, unknown>;
   const from = readString(rawCall.from) ?? readString(rawCall.peerJid);
   const to = readString(rawCall.to) ?? readString(rawCall.toJid);
   const fromMe = readBoolean(rawCall.fromMe) ?? readBoolean(rawCall.outgoing);
-  const chatId =
+  const chatId = resolvedChatId ??
     readString(rawCall.chatId) ??
     readString(rawCall.peerJid) ??
     (fromMe ? to ?? from : from ?? to);
@@ -423,10 +428,6 @@ const throwIfAborted = (signal?: AbortSignal): void => {
     throw createAbortError();
   }
 };
-
-const resolveRuntimeChatId = (
-  chat: Record<string, unknown>
-): string | undefined => extractSerializedId(chat.id) ?? readString(chat.chatId);
 
 const resolveRuntimeChatDisplayName = (
   chat: Record<string, unknown>
@@ -568,10 +569,21 @@ const bindLifecycleHandlers = (
   onDisconnected: () => Promise<void>
 ): void => {
   const processMessage = async (message: unknown): Promise<void> => {
-    const payload = message as MessagePayload;
-    const chatId = resolveChatId(payload);
+    const rawMessage = readRecord(message);
+
+    if (!rawMessage) {
+      return;
+    }
+
+    const filterDecision = shouldIngestMessageEvent(rawMessage);
+
+    if (!filterDecision.shouldIngest || !filterDecision.remoteChatId) {
+      return;
+    }
+
+    const chatId = filterDecision.remoteChatId;
     const phoneNumber = await resolvePhoneNumber(client, chatId);
-    const normalizedMessage = normalizeIncomingMessagePayload(message, {
+    const normalizedMessage = normalizeIncomingMessagePayload(rawMessage, {
       chatId,
       phoneNumber
     });
@@ -610,7 +622,23 @@ const bindLifecycleHandlers = (
   };
 
   const processCall = async (call: unknown): Promise<void> => {
-    const normalizedCall = await normalizeIncomingCallPayload(call, client);
+    const rawCall = readRecord(call);
+
+    if (!rawCall) {
+      return;
+    }
+
+    const filterDecision = shouldIngestCallEvent(rawCall);
+
+    if (!filterDecision.shouldIngest || !filterDecision.remoteChatId) {
+      return;
+    }
+
+    const normalizedCall = await normalizeIncomingCallPayload(
+      rawCall,
+      client,
+      filterDecision.remoteChatId
+    );
 
     if (!normalizedCall) {
       logger.warn('WhatsApp call skipped persistence: missing stable call id', {
@@ -674,13 +702,13 @@ const bindLifecycleHandlers = (
   });
 
   client.on('message_create', async (message: unknown) => {
-    const payload = message as MessagePayload;
+    const payload = readRecord(message);
 
-    if (!payload.fromMe) {
+    if (readBoolean(payload?.fromMe) !== true) {
       return;
     }
 
-    await processMessage(payload);
+    await processMessage(message);
   });
 
   client.on('call', async (call: unknown) => {
@@ -956,13 +984,29 @@ export const createSessionManager = ({
   }): Promise<SyncedMessageMetadata | undefined> => {
     throwIfAborted(signal);
 
-    const normalizedChatId =
-      readString(readRecord(rawMessage)?.chatId) ??
-      readString(readRecord(rawMessage)?.from) ??
-      fallbackChatId;
+    const rawMessageRecord = readRecord(rawMessage);
+
+    if (!rawMessageRecord) {
+      return undefined;
+    }
+
+    const messageFilterInput: Record<string, unknown> =
+      resolveMessageRemoteChatId(rawMessageRecord)
+        ? rawMessageRecord
+        : {
+            ...rawMessageRecord,
+            chatId: fallbackChatId
+          };
+    const filterDecision = shouldIngestMessageEvent(messageFilterInput);
+
+    if (!filterDecision.shouldIngest || !filterDecision.remoteChatId) {
+      return undefined;
+    }
+
+    const normalizedChatId = filterDecision.remoteChatId;
     const phoneNumber = await resolvePhoneNumber(client, normalizedChatId);
     const normalizedMessage: MessagePayload = {
-      ...normalizeIncomingMessagePayload(rawMessage, {
+      ...normalizeIncomingMessagePayload(rawMessageRecord, {
         chatId: normalizedChatId,
         phoneNumber
       }),
@@ -1043,16 +1087,13 @@ export const createSessionManager = ({
           continue;
         }
 
-        const chatId = resolveRuntimeChatId(rawChat);
+        const chatFilterDecision = shouldPollRuntimeChat(rawChat);
 
-        if (!chatId) {
-          logger.warn('WhatsApp polled chat skipped persistence: missing chat id', {
-            employeeId,
-            event: 'chat_sync_chat_skipped'
-          });
+        if (!chatFilterDecision.shouldIngest || !chatFilterDecision.remoteChatId) {
           continue;
         }
 
+        const chatId = chatFilterDecision.remoteChatId;
         const fetchMessages =
           typeof rawChat.fetchMessages === 'function'
             ? (rawChat.fetchMessages.bind(rawChat) as (
