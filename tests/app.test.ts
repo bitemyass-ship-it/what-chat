@@ -1,6 +1,9 @@
 import type { Express } from 'express';
 import { EventEmitter } from 'node:events';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { createApp } from '../src/app';
 import { createDatabase } from '../src/database/database';
@@ -47,6 +50,7 @@ const createReportPeriodDate = (monthOffset: number): Date => {
 
   return new Date(now.getFullYear(), now.getMonth() + monthOffset, 1, 0, 0, 0, 0);
 };
+const PREVIOUS_REPORT_PERIOD = formatReportPeriod(createReportPeriodDate(-1));
 const CURRENT_REPORT_PERIOD = formatReportPeriod(createReportPeriodDate(0));
 const NEXT_REPORT_PERIOD = formatReportPeriod(createReportPeriodDate(1));
 
@@ -272,6 +276,7 @@ describe('app wiring', () => {
   let logger: Logger | undefined;
   let removeSessionDirectorySpy: jest.SpiedFunction<typeof fs.rm> | undefined;
   let sessionManager: SessionManager | undefined;
+  let tempReportsRoot: string | undefined;
 
   beforeEach(() => {
     removeSessionDirectorySpy = jest.spyOn(fs, 'rm').mockResolvedValue(undefined);
@@ -294,12 +299,73 @@ describe('app wiring', () => {
   afterEach(() => {
     removeSessionDirectorySpy?.mockRestore();
     removeSessionDirectorySpy = undefined;
+    if (tempReportsRoot) {
+      fsSync.rmSync(tempReportsRoot, {
+        force: true,
+        recursive: true
+      });
+      tempReportsRoot = undefined;
+    }
     database?.close();
     app = undefined;
     database = undefined;
     logger = undefined;
     sessionManager = undefined;
   });
+
+  const createTempReportsRoot = (): string => {
+    tempReportsRoot = fsSync.mkdtempSync(
+      path.join(os.tmpdir(), 'what-chat-app-reports-')
+    );
+
+    return tempReportsRoot;
+  };
+
+  const createReportsTestApp = ({
+    reportExportService = createMockReportExportService(),
+    reportsDir
+  }: {
+    reportExportService?: ReportExportService;
+    reportsDir: string;
+  }): {
+    reportApp: Express;
+    reportExportService: ReportExportService;
+  } => ({
+    reportApp: createApp({
+      authPassword: AUTH_PASSWORD,
+      chats: database?.chats as Database['chats'],
+      databasePath: ':memory:',
+      employees: database?.employees as Database['employees'],
+      logger: logger as Logger,
+      messages: database?.messages as Database['messages'],
+      reportExportService,
+      reportsDir,
+      sessionManager: sessionManager as SessionManager
+    }),
+    reportExportService
+  });
+
+  const writeReportFile = ({
+    contents,
+    employeeCode,
+    period,
+    reportsDir
+  }: {
+    contents: string;
+    employeeCode: string;
+    period: string;
+    reportsDir: string;
+  }): string => {
+    const employeeDir = path.join(reportsDir, 'employees', employeeCode);
+    const filePath = path.join(employeeDir, `${employeeCode}-${period}.csv`);
+
+    fsSync.mkdirSync(employeeDir, {
+      recursive: true
+    });
+    fsSync.writeFileSync(filePath, contents);
+
+    return filePath;
+  };
 
   it('should keep health endpoint working after mounting employee routes', async () => {
     const response = await performRequest(app as Express, {
@@ -467,6 +533,536 @@ describe('app wiring', () => {
       total: 0,
       totalPages: 1
     });
+  });
+
+  it('should reject report download when the auth header is missing without starting export', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+
+    const response = await performRequest(reportApp, {
+      method: 'GET',
+      path: `/reports/anna/${CURRENT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(401);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'Unauthorized'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should reject report download when the auth header is invalid without starting export', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+
+    const response = await performRequest(reportApp, {
+      headers: {
+        [AUTH_PASSWORD_HEADER]: 'wrong-password'
+      },
+      method: 'GET',
+      path: `/reports/anna/${CURRENT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(401);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'Unauthorized'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should download an existing CSV report with attachment headers', async () => {
+    const reportsDir = createTempReportsRoot();
+    const csv = '\ufeffEvent Time;Phone Number;Direction;Message;Message Type;Call Status\n';
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+
+    database?.employees.create({
+      code: 'anna',
+      displayName: 'Anna'
+    });
+    writeReportFile({
+      contents: csv,
+      employeeCode: 'anna',
+      period: CURRENT_REPORT_PERIOD,
+      reportsDir
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'GET',
+      path: `/reports/anna/${CURRENT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toBe(csv);
+    expect(response.headers['content-type']).toBe('text/csv; charset=utf-8');
+    expect(response.headers['content-disposition']).toBe(
+      `attachment; filename="anna-${CURRENT_REPORT_PERIOD}.csv"`
+    );
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should ignore a request body when downloading a CSV report', async () => {
+    const reportsDir = createTempReportsRoot();
+    const csv = 'event;phone\none;two\n';
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+
+    database?.employees.create({
+      code: 'anna'
+    });
+    writeReportFile({
+      contents: csv,
+      employeeCode: 'anna',
+      period: CURRENT_REPORT_PERIOD,
+      reportsDir
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      body: JSON.stringify({
+        fileName: 'other.csv'
+      }),
+      headers: {
+        'content-type': 'application/json'
+      },
+      method: 'GET',
+      path: `/reports/anna/${CURRENT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toBe(csv);
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should return 404 when downloading a report for an unknown employee', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'GET',
+      path: `/reports/anna/${CURRENT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(404);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'Employee not found: anna'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 for invalid report download period', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+
+    database?.employees.create({
+      code: 'anna'
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'GET',
+      path: '/reports/anna/202613'
+    });
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'period route parameter must use YYYYMM format'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should return 400 for future report download period', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+
+    database?.employees.create({
+      code: 'anna'
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'GET',
+      path: `/reports/anna/${NEXT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'period must not be in the future'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should return 404 when the requested report file does not exist', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+
+    database?.employees.create({
+      code: 'anna'
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'GET',
+      path: `/reports/anna/${CURRENT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(404);
+    expect(JSON.parse(response.body)).toEqual({
+      error: `Report not found: anna ${CURRENT_REPORT_PERIOD}`
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should return 500 when the report file cannot be read', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+    const readError = Object.assign(new Error('permission denied'), {
+      code: 'EACCES'
+    });
+
+    database?.employees.create({
+      code: 'anna'
+    });
+    const targetFilePath = writeReportFile({
+      contents: 'event;phone\n',
+      employeeCode: 'anna',
+      period: CURRENT_REPORT_PERIOD,
+      reportsDir
+    });
+
+    const readFileSpy = jest.spyOn(fs, 'readFile').mockRejectedValueOnce(readError);
+
+    try {
+      const response = await performProtectedRequest(reportApp, {
+        method: 'GET',
+        path: `/reports/anna/${CURRENT_REPORT_PERIOD}`
+      });
+
+      expect(response.status).toBe(500);
+      expect(JSON.parse(response.body)).toEqual({
+        error: 'Failed to read report file'
+      });
+      expect(logger?.error).toHaveBeenCalledWith('Failed to read report file', {
+        employeeCode: 'anna',
+        error: 'permission denied',
+        period: CURRENT_REPORT_PERIOD,
+        targetFilePath
+      });
+      expect(reportExportService.startExport).not.toHaveBeenCalled();
+    } finally {
+      readFileSpy.mockRestore();
+    }
+  });
+
+  it('should reject report download paths that escape the reports directory', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'GET',
+      path: `/reports/%2E%2E/${CURRENT_REPORT_PERIOD}`
+    });
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'Invalid report path'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should reject report list when the auth header is missing', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+
+    const response = await performRequest(reportApp, {
+      method: 'GET',
+      path: '/reports'
+    });
+
+    expect(response.status).toBe(401);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'Unauthorized'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should reject report list when the auth header is invalid', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+
+    const response = await performRequest(reportApp, {
+      headers: {
+        [AUTH_PASSWORD_HEADER]: 'wrong-password'
+      },
+      method: 'GET',
+      path: '/reports'
+    });
+
+    expect(response.status).toBe(401);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'Unauthorized'
+    });
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should return an empty report list when the reports directory is missing', async () => {
+    const reportsRoot = createTempReportsRoot();
+    const { reportApp } = createReportsTestApp({
+      reportsDir: path.join(reportsRoot, 'missing')
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'GET',
+      path: '/reports'
+    });
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual([]);
+  });
+
+  it('should return an empty report list when the employees reports directory is missing', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp } = createReportsTestApp({
+      reportsDir
+    });
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'GET',
+      path: '/reports'
+    });
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual([]);
+  });
+
+  it('should list available report files with deterministic sorting and discovery rules', async () => {
+    const reportsDir = createTempReportsRoot();
+    const employeesDir = path.join(reportsDir, 'employees');
+    const annaDir = path.join(employeesDir, 'anna');
+    const { reportApp, reportExportService } = createReportsTestApp({
+      reportsDir
+    });
+
+    writeReportFile({
+      contents: 'anna current',
+      employeeCode: 'anna',
+      period: CURRENT_REPORT_PERIOD,
+      reportsDir
+    });
+    writeReportFile({
+      contents: 'anna previous',
+      employeeCode: 'anna',
+      period: PREVIOUS_REPORT_PERIOD,
+      reportsDir
+    });
+    writeReportFile({
+      contents: 'bob current',
+      employeeCode: 'bob',
+      period: CURRENT_REPORT_PERIOD,
+      reportsDir
+    });
+    fsSync.mkdirSync(path.join(annaDir, 'archive'), {
+      recursive: true
+    });
+    fsSync.writeFileSync(path.join(reportsDir, 'tmp.csv'), 'ignored');
+    fsSync.writeFileSync(path.join(employeesDir, 'not-a-directory'), 'ignored');
+    fsSync.writeFileSync(path.join(annaDir, 'readme.txt'), 'ignored');
+    fsSync.writeFileSync(path.join(annaDir, 'anna-202613.csv'), 'ignored');
+    fsSync.writeFileSync(
+      path.join(annaDir, `bob-${CURRENT_REPORT_PERIOD}.csv`),
+      'ignored'
+    );
+    fsSync.writeFileSync(
+      path.join(annaDir, 'archive', `anna-${PREVIOUS_REPORT_PERIOD}.csv`),
+      'ignored'
+    );
+
+    const response = await performProtectedRequest(reportApp, {
+      method: 'GET',
+      path: '/reports'
+    });
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toEqual([
+      {
+        downloadUrl: `/reports/anna/${CURRENT_REPORT_PERIOD}`,
+        employeeCode: 'anna',
+        fileName: `anna-${CURRENT_REPORT_PERIOD}.csv`,
+        period: CURRENT_REPORT_PERIOD
+      },
+      {
+        downloadUrl: `/reports/anna/${PREVIOUS_REPORT_PERIOD}`,
+        employeeCode: 'anna',
+        fileName: `anna-${PREVIOUS_REPORT_PERIOD}.csv`,
+        period: PREVIOUS_REPORT_PERIOD
+      },
+      {
+        downloadUrl: `/reports/bob/${CURRENT_REPORT_PERIOD}`,
+        employeeCode: 'bob',
+        fileName: `bob-${CURRENT_REPORT_PERIOD}.csv`,
+        period: CURRENT_REPORT_PERIOD
+      }
+    ]);
+    expect(reportExportService.startExport).not.toHaveBeenCalled();
+  });
+
+  it('should return 500 when report files cannot be listed', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp } = createReportsTestApp({
+      reportsDir
+    });
+    const listError = Object.assign(new Error('permission denied'), {
+      code: 'EACCES'
+    });
+    const readDirSpy = jest.spyOn(fs, 'readdir').mockRejectedValueOnce(listError);
+
+    try {
+      const response = await performProtectedRequest(reportApp, {
+        method: 'GET',
+        path: '/reports'
+      });
+
+      expect(response.status).toBe(500);
+      expect(JSON.parse(response.body)).toEqual({
+        error: 'Failed to list report files'
+      });
+      expect(logger?.error).toHaveBeenCalledWith('Failed to list report files', {
+        error: 'permission denied',
+        reportsDir
+      });
+    } finally {
+      readDirSpy.mockRestore();
+    }
+  });
+
+  it('should skip unreadable employee directories without breaking the whole list', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp } = createReportsTestApp({ reportsDir });
+
+    writeReportFile({
+      contents: 'anna data',
+      employeeCode: 'anna',
+      period: CURRENT_REPORT_PERIOD,
+      reportsDir
+    });
+    writeReportFile({
+      contents: 'bob data',
+      employeeCode: 'bob',
+      period: CURRENT_REPORT_PERIOD,
+      reportsDir
+    });
+
+    const annaDir = path.resolve(reportsDir, 'employees', 'anna');
+    const readdirOriginal = fs.readdir.bind(fs);
+    const readdirSpy = jest.spyOn(fs, 'readdir').mockImplementation(
+      (async (...args: Parameters<typeof fs.readdir>): Promise<any> => {
+        if (path.resolve(String(args[0])) === annaDir) {
+          throw Object.assign(new Error('permission denied'), {
+            code: 'EACCES'
+          });
+        }
+
+        return readdirOriginal(...args);
+      }) as typeof fs.readdir
+    );
+
+    try {
+      const response = await performProtectedRequest(reportApp, {
+        method: 'GET',
+        path: '/reports'
+      });
+
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.body)).toEqual([
+        {
+          downloadUrl: `/reports/bob/${CURRENT_REPORT_PERIOD}`,
+          employeeCode: 'bob',
+          fileName: `bob-${CURRENT_REPORT_PERIOD}.csv`,
+          period: CURRENT_REPORT_PERIOD
+        }
+      ]);
+      expect(logger?.warn).toHaveBeenCalledWith(
+        'Failed to read employee report directory',
+        expect.objectContaining({
+          employeeCode: 'anna',
+          error: 'permission denied'
+        })
+      );
+    } finally {
+      readdirSpy.mockRestore();
+    }
+  });
+
+  it('should not expose files outside the reports directory when listing reports', async () => {
+    const reportsDir = createTempReportsRoot();
+    const { reportApp } = createReportsTestApp({ reportsDir });
+    const outsideDir = fsSync.mkdtempSync(
+      path.join(os.tmpdir(), 'what-chat-outside-')
+    );
+
+    try {
+      writeReportFile({
+        contents: 'bob data',
+        employeeCode: 'bob',
+        period: CURRENT_REPORT_PERIOD,
+        reportsDir
+      });
+
+      const outsideEmployeeDir = path.join(outsideDir, 'evil');
+
+      fsSync.mkdirSync(outsideEmployeeDir, { recursive: true });
+      fsSync.writeFileSync(
+        path.join(outsideEmployeeDir, `evil-${CURRENT_REPORT_PERIOD}.csv`),
+        'outside data'
+      );
+      fsSync.symlinkSync(
+        outsideEmployeeDir,
+        path.join(reportsDir, 'employees', 'evil')
+      );
+
+      const response = await performProtectedRequest(reportApp, {
+        method: 'GET',
+        path: '/reports'
+      });
+
+      expect(response.status).toBe(200);
+
+      const reports = JSON.parse(response.body);
+
+      expect(
+        reports.every(
+          (report: { employeeCode: string }) => report.employeeCode !== 'evil'
+        )
+      ).toBe(true);
+      expect(reports).toEqual([
+        {
+          downloadUrl: `/reports/bob/${CURRENT_REPORT_PERIOD}`,
+          employeeCode: 'bob',
+          fileName: `bob-${CURRENT_REPORT_PERIOD}.csv`,
+          period: CURRENT_REPORT_PERIOD
+        }
+      ]);
+    } finally {
+      fsSync.rmSync(outsideDir, { force: true, recursive: true });
+    }
   });
 
   it('should reject report export when the auth header is missing without starting export', async () => {

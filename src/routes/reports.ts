@@ -28,6 +28,8 @@ export const createReportsRouter = ({
   });
   const router = Router();
 
+  router.get('/reports', controller.list);
+  router.get('/reports/:employeeCode/:period', controller.download);
   router.post('/reports/:employeeCode/:period', controller.create);
 
   return router;

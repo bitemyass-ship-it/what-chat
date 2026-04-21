@@ -15,6 +15,11 @@ interface BuildReportTargetFilePathOptions {
   reportsDir: string;
 }
 
+interface IsPathInsideReportsDirOptions {
+  reportsDir: string;
+  targetFilePath: string;
+}
+
 export const resolveReportsDir = ({
   env = process.env,
   projectRoot = findProjectRoot(__dirname),
@@ -41,3 +46,26 @@ export const buildReportTargetFilePath = ({
     employeeCode,
     `${employeeCode}-${period}.csv`
   );
+
+export const resolveReportTargetFilePath = (
+  options: BuildReportTargetFilePathOptions
+): string => path.resolve(buildReportTargetFilePath(options));
+
+export const buildReportsEmployeesDirPath = (reportsDir: string): string =>
+  path.join(reportsDir, 'employees');
+
+export const isPathInsideReportsDir = ({
+  reportsDir,
+  targetFilePath
+}: IsPathInsideReportsDirOptions): boolean => {
+  const relativePath = path.relative(
+    path.resolve(reportsDir),
+    path.resolve(targetFilePath)
+  );
+
+  return (
+    relativePath !== '' &&
+    !relativePath.startsWith('..') &&
+    !path.isAbsolute(relativePath)
+  );
+};
